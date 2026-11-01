@@ -1,7 +1,9 @@
 #!/bin/bash
 # Customered_Ubuntu one-command installer. On Ubuntu 26.04 Desktop (x86_64):
 #
-#   curl -fsSL https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash
+#   wget -qO- https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash
+#
+# (wget, not curl: a stock Ubuntu 26.04 Desktop has no curl.)
 #
 # Optional extra (off by default): `... | sudo bash -s -- --reset-desktop`
 # also resets YOUR desktop settings to the preload defaults right away (only
@@ -47,7 +49,7 @@ preflight() {
         fail "磁盘空间不足：需要约 ${need} GB，系统盘只剩 ${avail} GB。" \
              "Not enough disk space: about ${need} GB needed, ${avail} GB free on /."
     if [ -z "${PRELOAD_TEST_REMOTE:-}" ]; then
-        curl -fsS --max-time 20 -o /dev/null https://github.com ||
+        wget -q --spider --timeout=20 --tries=2 https://github.com ||
             fail "连不上 GitHub，请检查网络后重试。" "Cannot reach github.com; check the network and try again."
     fi
     local b
@@ -99,7 +101,7 @@ reset_desktop() { # for the user who ran sudo only
 }
 
 main() {
-    exec </dev/null   # the script itself may be arriving on stdin (curl | bash)
+    exec </dev/null   # the script itself may be arriving on stdin (wget | bash)
     local reset=0 a
     for a in "$@"; do
         case $a in
@@ -117,11 +119,12 @@ main() {
     info ""
     local t0=$SECONDS
 
-    info "== 准备 / Preparing (git, ssh-keygen)"
-    if ! command -v git >/dev/null || ! command -v ssh-keygen >/dev/null; then
+    info "== 准备 / Preparing (git, curl, ssh-keygen)"
+    # stock Desktop lacks git and curl (the engine downloads with curl)
+    if ! command -v git >/dev/null || ! command -v curl >/dev/null || ! command -v ssh-keygen >/dev/null; then
         apt-get -o DPkg::Lock::Timeout=900 update -qq
         DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 install -y -qq \
-            git openssh-client ca-certificates >/dev/null
+            git curl openssh-client ca-certificates >/dev/null
     fi
     install -d -m 0755 /etc/preload "$LIB"
     # Keep files a verified release installed earlier (they may carry a newer
@@ -141,9 +144,8 @@ main() {
         info "   跳过未通过验证的版本 / skipping unverified tag $t"
     done < <(g tag -l 'v*' | grep -E "$TAG_RE" | sort -rV)
     [ -n "$tag" ] || fail "没有找到签名有效的版本。" "No release with a valid signature was found."
-    local tree
     tree=$(mktemp -d /var/tmp/preload-bootstrap.XXXXXX)
-    trap 'rm -rf "$tree"' EXIT
+    trap 'rm -rf "${tree:-}"' EXIT   # global: the trap runs after main returns
     g archive --format=tar "refs/tags/$tag^{commit}" | tar -x -C "$tree" --no-same-owner
     info "   $tag OK ($(g rev-parse --short "refs/tags/$tag^{commit}"))"
     info ""

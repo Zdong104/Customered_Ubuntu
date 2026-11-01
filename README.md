@@ -9,7 +9,7 @@
 ## 安装
 
 1. 打开终端（按 `Ctrl+Alt+T`）。
-2. 粘贴这条命令并回车，输入你的开机密码：`curl -fsSL https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash`
+2. 粘贴这条命令并回车，输入你的开机密码：`wget -qO- https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash`
 3. 显示“安装完成”后，注销并重新登录一次（如果提示需要重启，就再重启一次）。
 
 首次安装大约 30–60 分钟，需要联网，期间可以照常用电脑。中途断了也没关系：再运行一次同一条命令，会从中断处继续。
@@ -153,7 +153,7 @@ One command turns an Ubuntu 26.04 Desktop (x86_64, GNOME) into the owner's setup
 silently in the background:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash
 ```
 
 It checks the machine first (and changes nothing if a check fails), takes about 30-60 minutes, can be

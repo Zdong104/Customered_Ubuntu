@@ -460,8 +460,9 @@ EOF
     if [ -f /etc/default/im-config ]; then
         sed -i -E 's/^IM_CONFIG_DEFAULT_MODE=.*/IM_CONFIG_DEFAULT_MODE=fcitx5/' /etc/default/im-config
     fi
-    # conda available (not auto-activated) in every new user's bash
-    grep -q 'preload: conda' /etc/skel/.bashrc || cat >> /etc/skel/.bashrc <<'EOF'
+    # conda available (not auto-activated) in every user's interactive bash;
+    # system-wide, so users who existed before the install get it too
+    grep -q 'preload: conda' /etc/bash.bashrc || cat >> /etc/bash.bashrc <<'EOF'
 
 # preload: conda (system Miniconda in /opt/miniconda3; run `conda activate` to use base)
 if [ -f /opt/miniconda3/etc/profile.d/conda.sh ]; then
