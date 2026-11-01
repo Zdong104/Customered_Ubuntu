@@ -1,0 +1,6 @@
+{
+  "uuid": "raise-browser@zihan.local",
+  "name": "Raise Browser on Link Open",
+  "description": "When another app (WeChat, etc.) opens a link, bring Chrome to the front with the new tab.",
+  "shell-version": ["50"]
+}

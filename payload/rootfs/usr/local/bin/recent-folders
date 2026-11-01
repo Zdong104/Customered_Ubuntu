@@ -1,0 +1,269 @@
+#!/usr/bin/python3
+"""Put recently used folders into GNOME Files' "Recent" view.
+
+gvfs's recent:/// backend hides every entry in ~/.local/share/recently-used.xbel
+whose stored mime type is inode/directory, but it stats the real target for
+display.  So a folder stored as application/octet-stream shows up in Recent as
+a normal folder: openable, and a drag-and-drop target.
+
+Two sources feed it:
+  * folders open in a Files window (org.freedesktop.FileManager1
+    OpenWindowsWithLocations) for at least DWELL seconds -> recency = now
+  * the parent folder of any file another app records as recently used
+    (opened, saved, downloaded) -> recency = that file's timestamp;
+    screenshots/screencasts (CAPTURE_APPS) don't count
+
+Only the newest MAX_FOLDERS folder entries are kept.
+Run as a systemd user service: recent-folders.service.
+"""
+import os
+import sys
+import time
+
+from gi.repository import Gio, GLib
+
+APP = "recent-folders"
+APP_EXEC = "nautilus %u"
+FAKE_MIME = "application/octet-stream"
+DWELL = 2.0
+MAX_FOLDERS = 30
+# Apps that register files as "recent" on their own (screenshot/screencast
+# UI), not because the user opened them; such files never promote a folder,
+# even after being opened later.
+CAPTURE_APPS = {"gnome-shell", "org.gnome.Shell.Screencast"}
+
+XBEL = os.path.join(GLib.get_user_data_dir(), "recently-used.xbel")
+STATE = os.path.join(GLib.get_user_state_dir(), APP, "watermark")
+HOME = os.path.realpath(os.path.expanduser("~"))
+
+FM_NAME = "org.freedesktop.FileManager1"
+FM_PATH = "/org/freedesktop/FileManager1"
+
+
+def log(*a):
+    print(*a, file=sys.stderr, flush=True)
+
+
+def _excluded_dirs():
+    dirs = {HOME, "/"}
+    for d in range(GLib.UserDirectory.N_DIRECTORIES):
+        p = GLib.get_user_special_dir(GLib.UserDirectory(d))
+        if p:
+            dirs.add(os.path.realpath(p))
+    return dirs
+
+
+EXCLUDED = _excluded_dirs()
+EXCLUDED_PREFIXES = ("/tmp/", "/proc/", "/sys/", "/dev/", "/run/", "/var/tmp/")
+
+
+def wanted(path):
+    if not path or not os.path.isabs(path):
+        return False
+    path = os.path.normpath(path)
+    if path in EXCLUDED or (path + "/").startswith(EXCLUDED_PREFIXES):
+        return False
+    if any(part.startswith(".") for part in path.split("/")):
+        return False
+    return os.path.isdir(path)
+
+
+def load_bookmarks():
+    bf = GLib.BookmarkFile()
+    try:
+        bf.load_from_file(XBEL)
+    except GLib.Error as e:
+        if not e.matches(GLib.file_error_quark(), GLib.FileError.NOENT):
+            raise
+    return bf
+
+
+def save_bookmarks(bf):
+    data = bf.to_data()
+    if isinstance(data, tuple):
+        data = data[0]
+    GLib.file_set_contents_full(XBEL, data, GLib.FileSetContentsFlags.CONSISTENT, 0o600)
+
+
+def ours(bf, uri):
+    try:
+        return bf.has_application(uri, APP)
+    except GLib.Error:
+        return False
+
+
+def modified(bf, uri):
+    return bf.get_modified_date_time(uri).to_unix()
+
+
+def is_folder_entry(bf, uri):
+    if ours(bf, uri):
+        return True
+    try:
+        return bf.get_mime_type(uri) == "inode/directory"
+    except GLib.Error:
+        return False
+
+
+def put_folder(bf, uri, stamp):
+    """Record folder `uri` as used at unix time `stamp`; True if changed."""
+    when = GLib.DateTime.new_from_unix_utc(int(stamp))
+    if bf.has_item(uri) and ours(bf, uri) and modified(bf, uri) >= int(stamp):
+        return False
+    bf.set_mime_type(uri, FAKE_MIME)
+    bf.set_application_info(uri, APP, APP_EXEC, -1, when)
+    bf.set_modified_date_time(uri, when)
+    bf.set_visited_date_time(uri, when)
+    return True
+
+
+def prune(bf):
+    mine = sorted((u for u in bf.get_uris() if ours(bf, u)),
+                  key=lambda u: modified(bf, u), reverse=True)
+    for uri in mine[MAX_FOLDERS:]:
+        if len(bf.get_applications(uri)) > 1:
+            bf.remove_application(uri, APP)
+            bf.set_mime_type(uri, "inode/directory")
+        else:
+            bf.remove_item(uri)
+    return len(mine) > MAX_FOLDERS
+
+
+def read_watermark():
+    try:
+        with open(STATE) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def write_watermark(value):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE, "w") as f:
+        f.write(str(value))
+
+
+class RecentFolders:
+    def __init__(self):
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        self.locations = set()
+        self.pending = {}           # path -> GLib source id
+        self.watermark = read_watermark()
+        self.scan_id = 0
+
+        self.monitor = Gio.File.new_for_path(XBEL).monitor_file(Gio.FileMonitorFlags.NONE)
+        self.monitor.connect("changed", self.on_xbel_changed)
+
+        self.bus.signal_subscribe(FM_NAME, "org.freedesktop.DBus.Properties",
+                                  "PropertiesChanged", FM_PATH, None,
+                                  Gio.DBusSignalFlags.NONE, self.on_props)
+        Gio.bus_watch_name_on_connection(self.bus, FM_NAME, Gio.BusNameWatcherFlags.NONE,
+                                         self.on_fm_appeared, self.on_fm_vanished)
+        self.scan_recent_files()
+
+    # -- Files windows ------------------------------------------------------
+
+    def on_fm_appeared(self, _conn, _name, _owner):
+        try:
+            reply = self.bus.call_sync(FM_NAME, FM_PATH, "org.freedesktop.DBus.Properties",
+                                       "Get", GLib.Variant("(ss)", (FM_NAME, "OpenWindowsWithLocations")),
+                                       None, Gio.DBusCallFlags.NONE, 2000, None)
+            self.set_locations(reply.unpack()[0])
+        except GLib.Error as e:
+            log("FileManager1 Get failed:", e.message)
+
+    def on_fm_vanished(self, _conn, _name):
+        self.set_locations({})
+
+    def on_props(self, _conn, _sender, _path, _iface, _signal, params):
+        iface, changed, _invalidated = params.unpack()
+        if iface == FM_NAME and "OpenWindowsWithLocations" in changed:
+            self.set_locations(changed["OpenWindowsWithLocations"])
+
+    def set_locations(self, windows):
+        now = set()
+        for uris in windows.values():
+            for uri in uris:
+                if uri.startswith("file://"):
+                    now.add(Gio.File.new_for_uri(uri).get_path())
+        for path in now - self.locations:
+            if path not in self.pending:
+                self.pending[path] = GLib.timeout_add(int(DWELL * 1000), self.on_dwelled, path)
+        for path in self.locations - now:
+            src = self.pending.pop(path, None)
+            if src:
+                GLib.source_remove(src)
+        self.locations = now
+
+    def on_dwelled(self, path):
+        self.pending.pop(path, None)
+        if path in self.locations and wanted(path):
+            self.record({Gio.File.new_for_path(path).get_uri(): time.time()})
+        return GLib.SOURCE_REMOVE
+
+    # -- recently used files ------------------------------------------------
+
+    def on_xbel_changed(self, _mon, _file, _other, event):
+        if event in (Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED,
+                     Gio.FileMonitorEvent.CHANGED, Gio.FileMonitorEvent.RENAMED,
+                     Gio.FileMonitorEvent.MOVED_IN):
+            if self.scan_id:
+                GLib.source_remove(self.scan_id)
+            self.scan_id = GLib.timeout_add(500, self.on_scan_timeout)
+
+    def on_scan_timeout(self):
+        self.scan_id = 0
+        self.scan_recent_files()
+        return GLib.SOURCE_REMOVE
+
+    def scan_recent_files(self):
+        try:
+            bf = load_bookmarks()
+        except GLib.Error as e:
+            log("cannot read", XBEL, e.message)
+            return
+        found = {}
+        newest = self.watermark
+        for uri in bf.get_uris():
+            if not uri.startswith("file://") or is_folder_entry(bf, uri):
+                continue
+            stamp = modified(bf, uri)
+            if stamp <= self.watermark:
+                continue
+            newest = max(newest, stamp)
+            if CAPTURE_APPS.intersection(bf.get_applications(uri)):
+                continue
+            parent = os.path.dirname(Gio.File.new_for_uri(uri).get_path() or "")
+            if wanted(parent):
+                puri = Gio.File.new_for_path(parent).get_uri()
+                found[puri] = max(found.get(puri, 0), stamp)
+        if found:
+            self.record(found, bf)
+        if newest != self.watermark:
+            self.watermark = newest
+            write_watermark(newest)
+
+    # -- writing ------------------------------------------------------------
+
+    def record(self, folders, bf=None):
+        """folders: {folder uri: unix time}."""
+        try:
+            bf = bf or load_bookmarks()
+            changed = False
+            for uri, stamp in folders.items():
+                changed |= put_folder(bf, uri, stamp)
+            changed |= prune(bf)
+            if changed:
+                save_bookmarks(bf)
+                log("recorded", ", ".join(Gio.File.new_for_uri(u).get_path() for u in folders))
+        except GLib.Error as e:
+            log("update failed:", e.message)
+
+
+def main():
+    RecentFolders()
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

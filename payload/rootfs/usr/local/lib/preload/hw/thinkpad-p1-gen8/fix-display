@@ -1,0 +1,111 @@
+#!/usr/bin/python3
+"""Kick the internal panel back to life after opening the lid.
+
+Works around an i915 bug on Arrow Lake (8086:7d51) where enabling eDP-1 on lid
+open completes in the kernel but never actually drives the panel, leaving it
+dark until some other client forces a fresh atomic commit.
+
+This re-applies the *current* monitor layout via Mutter's DisplayConfig, which
+triggers that commit. Uses method=1 (temporary) so monitors.xml is never
+rewritten -- your saved arrangement is untouched.
+
+Usage:  fix-display [--dry-run] [--probe]
+
+--probe answers one question: is mutter responsive right now? It asks for the
+current state with a short timeout and reports the result as the exit status,
+changing nothing. relight-panel uses this instead of guessing from the kernel
+log whether the commit storm has passed.
+
+Exit status:  0 ok  |  1 mutter unreachable or busy  |  2 panel is closed
+"""
+import sys
+
+import gi
+from gi.repository import Gio, GLib
+
+DEST = "org.gnome.Mutter.DisplayConfig"
+PATH = "/org/gnome/Mutter/DisplayConfig"
+IFACE = "org.gnome.Mutter.DisplayConfig"
+
+METHOD_TEMPORARY = 1
+
+# Long enough that a merely slow reply is not mistaken for a blocked mutter,
+# short enough to poll with. When mutter is stuck in drm_atomic_commit it is
+# stuck for ~10s at a time, so anything in this range reads as "still busy".
+PROBE_TIMEOUT_MS = 3_000
+
+# 60s rather than the 25s D-Bus default: after the i915 failure mutter can sit
+# blocked in drm_atomic_commit for ~40s, and timing out there means the panel
+# just stays dark. Never -1: an unbounded wait would hang the watcher forever.
+CALL_TIMEOUT_MS = 60_000
+
+# mutter's own words when the lid is shut. Retrying cannot help, so we exit 2
+# and let the caller stop rather than burn three attempts on it.
+CLOSED_PANEL = "Refusing to activate a closed laptop panel"
+
+
+def get_state(bus, timeout_ms):
+    return bus.call_sync(
+        DEST, PATH, IFACE, "GetCurrentState", None, None,
+        Gio.DBusCallFlags.NONE, timeout_ms, None,
+    ).unpack()
+
+
+def main() -> int:
+    dry_run = "--dry-run" in sys.argv
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+    if "--probe" in sys.argv:
+        try:
+            get_state(bus, PROBE_TIMEOUT_MS)
+        except GLib.GError:
+            return 1
+        return 0
+
+    serial, monitors, logical, _props = get_state(bus, CALL_TIMEOUT_MS)
+
+    # connector -> id of the mode currently in use
+    current_mode = {}
+    for spec, modes, _mprops in monitors:
+        connector = spec[0]
+        for mode in modes:
+            mode_id, props = mode[0], mode[-1]
+            if isinstance(props, dict) and props.get("is-current"):
+                current_mode[connector] = mode_id
+
+    entries = []
+    for x, y, scale, transform, primary, mons, _lprops in logical:
+        assigned = []
+        for m in mons:
+            connector = m[0]
+            if connector not in current_mode:
+                print(f"!! no current mode for {connector}, aborting", file=sys.stderr)
+                return 1
+            assigned.append((connector, current_mode[connector], {}))
+        entries.append((x, y, float(scale), transform, primary, assigned))
+        who = ", ".join(a[0] for a in assigned)
+        print(f"  {who:<10} ({x},{y})  scale={scale}  "
+              f"mode={assigned[0][1]}{'  [primary]' if primary else ''}")
+
+    if dry_run:
+        print("\n--dry-run: nothing applied.")
+        return 0
+
+    args = GLib.Variant(
+        "(uua(iiduba(ssa{sv}))a{sv})",
+        (serial, METHOD_TEMPORARY, entries, {}),
+    )
+    try:
+        bus.call_sync(DEST, PATH, IFACE, "ApplyMonitorsConfig", args, None,
+                      Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None)
+    except GLib.GError as err:
+        if CLOSED_PANEL in err.message:
+            print("lid is closed, nothing to relight", file=sys.stderr)
+            return 2
+        raise
+    print("\nDisplay config re-applied.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

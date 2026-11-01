@@ -1,0 +1,3 @@
+# Packages that preload-update purges from every machine (one or more per
+# line). This is the ONLY way an update ever removes a package; packages that
+# simply disappear from packages.txt stay installed.

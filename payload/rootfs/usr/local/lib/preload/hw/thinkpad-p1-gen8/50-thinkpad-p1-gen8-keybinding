@@ -1,0 +1,8 @@
+# P1 Gen 8 only: Super+Shift+D re-applies the monitor layout (C10 PHY black-panel workaround)
+[org/gnome/settings-daemon/plugins/media-keys]
+custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0]
+binding='<Super><Shift>d'
+command='/usr/local/bin/fix-display'
+name='Fix internal display'

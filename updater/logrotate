@@ -1,0 +1,7 @@
+/var/log/preload-update.log {
+    monthly
+    rotate 6
+    compress
+    missingok
+    notifempty
+}

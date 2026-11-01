@@ -1,0 +1,6 @@
+{
+  "uuid": "hide-minimized@zihan.local",
+  "name": "Hide Minimized",
+  "description": "Leave minimized windows out of the Activities overview and the Alt+Tab window switcher. Restore them from the dock or Super+Tab.",
+  "shell-version": ["50"]
+}

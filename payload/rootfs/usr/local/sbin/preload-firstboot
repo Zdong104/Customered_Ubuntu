@@ -1,0 +1,6 @@
+#!/bin/sh
+# One-time per-machine identity regeneration for the preload image.
+# The image ships without SSH host keys; create them so openssh-server works
+# if the owner ever enables it (it is installed but disabled).
+[ -e /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -A
+exit 0

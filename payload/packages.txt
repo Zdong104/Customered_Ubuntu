@@ -1,0 +1,44 @@
+# Ubuntu archive packages installed into the preload layer (one per line).
+# Reviewed from the owner's `apt-mark showmanual` + apt history (2026-10-29),
+# minus: samba, stunnel4, cloudflared, zrok2, xfce4/xrdp, eveusb, WPS, ToDesk.
+
+# kernel (fully upgraded at build time; same meta the installer uses)
+linux-generic-hwe-24.04
+
+# dev toolchain
+build-essential cmake pkg-config autoconf automake libtool patchelf git curl wget
+unzip 7zip zstd tmux sshpass nodejs npm python3-pip python3-venv python3-dev
+default-jre openjdk-25-jre-headless glslc vulkan-tools
+
+# dev headers (Vocalinux / whisper.cpp builds and the owner's other builds)
+libpipewire-0.3-dev libspa-0.2-dev libevdev-dev libturbojpeg0-dev
+libgirepository1.0-dev libgirepository-2.0-dev libcairo2-dev portaudio19-dev
+libvulkan-dev libx11-dev libxkbfile-dev libssl-dev libsqlite3-dev libpcap-dev
+libev-dev libnl-3-dev libnl-genl-3-dev libnl-route-3-dev gir1.2-appindicator3-0.1
+libxcb-damage0
+
+# input method / Chinese
+fcitx5 fcitx5-chinese-addons fcitx5-config-qt fcitx5-module-cloudpinyin
+language-pack-zh-hans language-pack-zh-hans-base language-pack-gnome-zh-hans
+language-pack-gnome-zh-hans-base gnome-user-docs-zh-hans
+language-pack-en language-pack-en-base language-pack-gnome-en language-pack-gnome-en-base
+fonts-noto-cjk fonts-noto-cjk-extra fonts-arphic-ukai fonts-arphic-uming
+ibus-libpinyin ibus-table-wubi ibus-table-cangjie-big ibus-table-cangjie3 ibus-table-cangjie5
+hunspell-en-au hunspell-en-ca hunspell-en-gb hunspell-en-za wbritish
+ydotool wtype xclip xsel wl-clipboard
+
+# virtualization / containers (no images, no VMs)
+docker.io qemu-system-x86 qemu-utils qemu-user qemu-user-binfmt qemu-system-arm
+qemu-efi-aarch64 ovmf swtpm swtpm-tools genisoimage libvirt-daemon-system
+libvirt-clients virt-manager virtinst virt-viewer spice-client-gtk
+debootstrap squashfs-tools gdisk parted dosfstools
+
+# desktop apps
+pdfarranger inkscape img2pdf showtime gnome-sushi python3-nautilus usb-creator-gtk
+software-properties-gtk netpbm
+
+# hardware / codecs
+intel-media-va-driver-non-free vainfo ubuntu-restricted-addons util-linux-extra
+
+# servers (installed but disabled, no host keys in the image)
+openssh-server

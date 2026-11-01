@@ -1,0 +1,340 @@
+#!/bin/bash
+# preload-update: fetch, verify and apply signed releases of the preload
+# desktop configuration. Installed to /usr/local/sbin by the releases
+# themselves; preload-update.timer runs it in the background.
+#
+#   preload-update --status         applied release, last result, next check
+#   preload-update --check          fetch + verify only; show what would apply
+#   preload-update --now            update now (ignores battery/metered checks)
+#   preload-update --rollback-info  release history and how undoing works
+#   preload-update --disable        stop automatic updates (keeps everything)
+#   preload-update --uninstall      remove the updater (installed apps stay)
+#   preload-update --timer          what the timer runs
+#
+# Trust model (this runs as root from a public repository):
+#  * only annotated tags named vYYYY.MM.DD[.N] are considered, never branches;
+#  * the tag must carry an SSH signature that `git verify-tag` accepts against
+#    the pinned /etc/preload/allowed_signers;
+#  * the signed tag object's own name must equal its ref name, so an old
+#    signed tag cannot be replayed under a newer name;
+#  * versions only go up (no downgrades, no re-applying older tags);
+#  * the release is applied from a fresh `git archive` of the tag's commit, so
+#    nothing untracked or left over can influence it;
+#  * fetching is https only (git's protocol allow-list).
+set -euo pipefail
+umask 022
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C.UTF-8
+CONF=/etc/preload/preload.conf
+SIGNERS=/etc/preload/allowed_signers
+LIB=/var/lib/preload
+REPO=$LIB/repo
+STATE=$LIB/state
+REL=$LIB/releases
+LOG=/var/log/preload-update.log
+LOCK=/run/lock/preload-update.lock
+TAG_RE='^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]{1,3})?$'
+
+say() {
+    printf '%s\n' "$*"
+    printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null || true
+}
+die() { say "错误 / ERROR: $*" >&2; exit "${2:-3}"; }
+
+repo_url() {
+    # Tests point PRELOAD_TEST_REMOTE at a local repository; real use is https.
+    if [ -n "${PRELOAD_TEST_REMOTE:-}" ]; then echo "$PRELOAD_TEST_REMOTE"; return; fi
+    local u
+    u=$(sed -n 's/^REPO_URL=//p' "$CONF" 2>/dev/null | tail -1)
+    [[ $u == https://* ]] || die "REPO_URL in $CONF is missing or not https://"
+    echo "$u"
+}
+
+# git with no user/system config, no prompts, https only, SSH tag signatures
+# checked against the pinned signers file.
+g() {
+    env -u GIT_DIR -u GIT_WORK_TREE HOME="$LIB" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL="${PRELOAD_TEST_REMOTE:+file:}https" \
+        git --git-dir="$REPO" -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$SIGNERS" \
+        -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@"
+}
+
+fetch() {
+    install -d -m 0755 "$LIB"
+    [ -f "$REPO/HEAD" ] || g init -q --bare
+    g config remote.origin.url "$(repo_url)"
+    # tags only; a tag moved or deleted upstream is mirrored (and re-verified)
+    g fetch -q --no-tags --prune --force origin '+refs/tags/v*:refs/tags/v*'
+}
+
+ver_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }
+
+# Prints why a tag is not acceptable; exit status 0 when it is.
+verify_tag() {
+    local t=$1 obj hdr
+    [[ $t =~ $TAG_RE ]] || { echo "malformed tag name"; return 1; }
+    [ "$(g cat-file -t "refs/tags/$t" 2>/dev/null)" = tag ] || { echo "not an annotated tag"; return 1; }
+    obj=$(g cat-file tag "refs/tags/$t")
+    hdr=$(sed '/^$/q' <<< "$obj")
+    [ "$(sed -n 's/^type //p' <<< "$hdr")" = commit ] || { echo "does not point at a commit"; return 1; }
+    [ "$(sed -n 's/^tag //p' <<< "$hdr")" = "$t" ] ||
+        { echo "signed tag object is named '$(sed -n 's/^tag //p' <<< "$hdr")' (replayed tag)"; return 1; }
+    grep -qx -- '-----BEGIN SSH SIGNATURE-----' <<< "$obj" || { echo "not SSH-signed"; return 1; }
+    g verify-tag "refs/tags/$t" >/dev/null 2>&1 || { echo "signature not valid for $SIGNERS"; return 1; }
+}
+
+# Newest acceptable tag newer than $1 (nothing when up to date). Refused tags
+# are logged and skipped, so a bad tag cannot block a good older one.
+newest_verified() {
+    local applied=$1 t why
+    while IFS= read -r t; do
+        ver_gt "$t" "$applied" || break
+        if why=$(verify_tag "$t"); then echo "$t"; return 0; fi
+        say "拒绝 / refused $t: $why" >&2
+    done < <(g tag -l 'v*' | grep -E "$TAG_RE" | sort -rV)
+    return 0
+}
+
+applied_version() { cat "$STATE/version" 2>/dev/null || echo v0; }
+
+# Pristine tree of the tag's commit -> $REL/<tag>
+extract() {
+    local t=$1 c d=$REL/$1
+    c=$(g rev-parse --verify -q "refs/tags/$t^{commit}")
+    install -d -m 0755 "$REL"
+    rm -rf "$d.tmp"; mkdir -p "$d.tmp"
+    g archive --format=tar "$c" | tar -x -C "$d.tmp" --no-same-owner
+    rm -rf "$d"; mv "$d.tmp" "$d"
+    echo "$c" > "$REL/$t.commit"
+}
+
+# Run the release's own engine (live mode, changed steps only). Progress lines
+# go to our stdout (terminal or journal), everything to the log file.
+apply_tree() { # tag dir
+    local rc=0
+    say "应用 / applying $1 ($(cat "$REL/$1.commit" 2>/dev/null || echo '?'))"
+    PRELOAD_MODE=live PRELOAD_PAYLOAD="$2/payload" PRELOAD_STATE="$STATE" PRELOAD_VERSION="$1" \
+        PRELOAD_PROGRESS_FD=3 bash "$2/payload/provision.sh" --changed 3>&1 >>"$LOG" 2>&1 || rc=$?
+    return $rc
+}
+
+record() { # tag rc
+    local failed
+    failed=$(paste -sd, "$STATE/failed" 2>/dev/null || true)
+    printf '%s %s %s rc=%s failed=%s\n' "$(date -Is)" "$1" "$(cat "$REL/$1.commit" 2>/dev/null)" "$2" "${failed:--}" >> "$STATE/history"
+    [ "$2" -le 1 ] || return 0       # a core step failed: stay on the old version, retry next time
+    echo "$1" > "$STATE/version"
+    ln -sfn "releases/$1" "$LIB/current.new" && mv -T "$LIB/current.new" "$LIB/current"
+    # keep the three newest release trees
+    local old
+    for old in $(ls -1 "$REL" | grep -E "$TAG_RE" | sort -V | head -n -3); do
+        rm -rf "${REL:?}/$old" "$REL/$old.commit"
+    done
+}
+
+# Desktop notification to every logged-in graphical user (none: just log).
+notify_users() { # urgency title body
+    command -v loginctl >/dev/null || return 0
+    if ! command -v notify-send >/dev/null; then say "notify-send not installed; no desktop notification"; return 0; fi
+    local sid uid user seen=" " n=0
+    for sid in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+        case "$(loginctl show-session "$sid" -p Type --value 2>/dev/null)" in wayland|x11) ;; *) continue ;; esac
+        [ "$(loginctl show-session "$sid" -p Class --value 2>/dev/null)" = user ] || continue
+        uid=$(loginctl show-session "$sid" -p User --value 2>/dev/null) || continue
+        user=$(loginctl show-session "$sid" -p Name --value 2>/dev/null) || continue
+        [[ $seen == *" $uid "* ]] && continue
+        seen+="$uid "
+        [ -S "/run/user/$uid/bus" ] || continue
+        if timeout 20 runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+               XDG_RUNTIME_DIR="/run/user/$uid" notify-send -u "$1" -a "Preload" \
+               -i system-software-update "$2" "$3" 2>/dev/null; then
+            n=$((n + 1))
+        fi
+    done
+    say "通知 / notified $n graphical session(s)"
+}
+
+# Logged-in users pick up new skel files / extensions now, not at next login.
+sync_users() {
+    local uid user
+    for uid in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $1}'); do
+        user=$(id -nu "$uid" 2>/dev/null) || continue
+        [ "$uid" -ge 1000 ] || continue
+        timeout 60 systemctl --user -M "$user@" start preload-user-sync.service 2>/dev/null || true
+    done
+}
+
+on_low_battery() {
+    local b
+    for b in /sys/class/power_supply/*; do
+        [ "$(cat "$b/type" 2>/dev/null)" = Battery ] || continue
+        [ "$(cat "$b/status" 2>/dev/null)" = Discharging ] || continue
+        [ "$(cat "$b/capacity" 2>/dev/null || echo 100)" -lt 30 ] && return 0
+    done
+    return 1
+}
+
+on_metered() { # NetworkManager: 1 = yes, 3 = guess-yes (phone hotspot)
+    local m
+    m=$(busctl get-property org.freedesktop.NetworkManager /org/freedesktop/NetworkManager \
+        org.freedesktop.NetworkManager Metered 2>/dev/null | awk '{print $2}') || return 1
+    [ "$m" = 1 ] || [ "$m" = 3 ]
+}
+
+# --now: same caps as the service unit, but a normal I/O class (someone waits).
+run_capped() {
+    [ -n "${PRELOAD_CAPPED:-}" ] && return 0
+    [ -d /run/systemd/system ] && command -v systemd-run >/dev/null || return 0
+    export PRELOAD_CAPPED=1
+    exec systemd-run --scope --quiet --collect -p MemoryMax=4G -p MemoryHigh=3584M \
+        -p CPUWeight=50 -p IOWeight=50 nice -n 10 ionice -c2 -n7 "$BASH" "$0" "$@"
+}
+
+take_lock() { # wait|nowait
+    install -d -m 0755 "$(dirname "$LOCK")"
+    exec 9>"$LOCK"
+    if [ "$1" = nowait ]; then
+        flock -n 9 || { say "另一个更新正在运行 / another preload-update is running"; exit 0; }
+    else
+        flock -n 9 || { say "等待正在运行的更新 / waiting for a running update ..."; flock -w 7200 9 || die "lock timeout"; }
+    fi
+}
+
+update() { # now|timer
+    local mode=$1 applied target d rc=0 failed
+    say "检查更新 / checking $(repo_url)"
+    if ! fetch >>"$LOG" 2>&1; then
+        [ "$mode" = now ] && die "无法连接更新服务器 / cannot fetch releases (network?)"
+        say "fetch failed; will try again later"; return 0
+    fi
+    applied=$(applied_version)
+    target=$(newest_verified "$applied")
+    if [ -z "$target" ]; then
+        if [ -s "$STATE/failed" ] && [ -d "$LIB/current" ]; then
+            # background retries of a failing step at most about once a day
+            if [ "$mode" = timer ] && [ $(( $(date +%s) - $(stat -c %Y "$STATE/failed") )) -lt 72000 ]; then
+                say "已是最新 / up to date ($applied); failed steps retry later: $(paste -sd' ' "$STATE/failed")"
+                return 0
+            fi
+            say "重试失败的步骤 / retrying failed steps of $applied: $(paste -sd' ' "$STATE/failed")"
+            apply_tree "$applied" "$(readlink -f "$LIB/current")" || rc=$?
+            record "$applied" "$rc"
+            [ "$rc" = 0 ] && notify_users low "桌面配置已更新到 $applied" "Desktop configuration updated to $applied."
+            summary "$applied" "$rc"
+            return "$rc"
+        fi
+        say "已是最新 / up to date ($applied)"
+        return 0
+    fi
+    say "新版本 / new release: $target (now $applied)"
+    extract "$target"
+    apply_tree "$target" "$REL/$target" || rc=$?
+    record "$target" "$rc"
+    failed=$(paste -sd' ' "$STATE/failed" 2>/dev/null || true)
+    local reboot=""
+    [ -e /var/run/reboot-required ] && reboot=" 需要重启 / Restart required."
+    case $rc in
+        0) notify_users normal "桌面配置已更新到 $target" \
+               "Desktop configuration updated to $target. 部分更改在重新登录后生效 / Some changes apply after logging out and in.$reboot" ;;
+        1) notify_users normal "桌面配置已更新到 $target（部分项目失败）" \
+               "Updated to $target; these will be retried automatically / 将自动重试: $failed.$reboot" ;;
+        *) notify_users critical "桌面配置更新失败 / Desktop update failed" \
+               "$target could not be applied ($failed); it will be retried. Details: sudo preload-update --status" ;;
+    esac
+    sync_users
+    summary "$target" "$rc"
+    return "$rc"
+}
+
+summary() { # version rc
+    local failed
+    failed=$(paste -sd' ' "$STATE/failed" 2>/dev/null || true)
+    case $2 in
+        0) say "完成 / done: $1" ;;
+        1) say "完成，但以下项目失败（会在后台自动重试）/ done, but these failed and will be retried: $failed" ;;
+        *) say "失败 / FAILED: $1 not applied (core step failed: $failed). Log: $LOG" ;;
+    esac
+}
+
+status() {
+    local v
+    v=$(applied_version)
+    echo "当前版本 / applied release : $v $(cat "$REL/$v.commit" 2>/dev/null || true)"
+    echo "更新源 / source            : $(repo_url 2>/dev/null || echo '?')"
+    if [ -s "$STATE/failed" ]; then
+        echo "待重试 / failed steps      : $(paste -sd' ' "$STATE/failed")"
+    fi
+    echo "上次运行 / last run         : $(tail -n 1 "$STATE/history" 2>/dev/null || echo never)"
+    echo "自动更新 / timer            : $(systemctl is-enabled preload-update.timer 2>/dev/null || echo unknown)," \
+         "next: $(systemctl show preload-update.timer -p NextElapseUSecRealtime --value 2>/dev/null || echo '?')"
+    echo "日志 / log                  : $LOG  (journalctl -u preload-update)"
+    [ -e /var/run/reboot-required ] && echo "需要重启 / restart required"
+    return 0
+}
+
+rollback_info() {
+    echo "当前版本 / applied: $(applied_version)"
+    echo "历史 / history ($STATE/history):"
+    tail -n 20 "$STATE/history" 2>/dev/null | sed 's/^/  /' || echo "  (none)"
+    echo "保留的版本 / kept release trees: $(ls -1 "$REL" 2>/dev/null | grep -E "$TAG_RE" | paste -sd' ')"
+    cat <<'EOF'
+
+Updates never go backwards by themselves (a downgrade would let an old,
+known-bad release be replayed). To undo a release, the owner publishes a new
+release that reverts it; it arrives like any other update.
+  * Files that preload replaced on this machine were saved once under
+    /var/lib/preload/backup and are put back automatically when a release
+    stops shipping them.
+  * Desktop settings are defaults only; your own changes always win.
+    `gsettings reset SCHEMA KEY` returns one key to the preload default.
+  * Stop automatic updates:  sudo preload-update --disable
+EOF
+}
+
+uninstall() {
+    systemctl disable --now preload-update.timer 2>/dev/null || true
+    systemctl --global disable preload-user-sync.service 2>/dev/null || true
+    rm -f /etc/systemd/system/preload-update.service /etc/systemd/system/preload-update.timer \
+        /usr/lib/systemd/user/preload-user-sync.service /usr/local/lib/preload/preload-user-sync \
+        /etc/logrotate.d/preload-update
+    rm -rf /etc/preload "$REPO" "$REL" "$LIB/current"
+    systemctl daemon-reload || true
+    rm -f /usr/local/sbin/preload-update
+    echo "自动更新已移除 / updater removed. Installed apps and settings were kept; state is in $STATE."
+}
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+
+main() {
+    local cmd=${1:---status}
+    case $cmd in
+        --status) status; return ;;
+        --rollback-info) rollback_info; return ;;
+        -h|--help) usage; return ;;
+    esac
+    [ "$(id -u)" = 0 ] || die "请用 sudo 运行 / run as root: sudo preload-update $cmd" 2
+    case $cmd in
+        --check)
+            take_lock wait
+            fetch >>"$LOG" 2>&1 || die "cannot fetch releases"
+            local a t
+            a=$(applied_version); t=$(newest_verified "$a")
+            if [ -n "$t" ]; then say "可更新 / update available: $a -> $t"; else say "已是最新 / up to date ($a)"; fi ;;
+        --now)
+            run_capped "$@"
+            take_lock wait
+            update now ;;
+        --timer)
+            take_lock nowait
+            if on_low_battery; then say "battery below 30%, skipping"; return 0; fi
+            if on_metered; then say "metered connection, skipping"; return 0; fi
+            update timer ;;
+        --disable)
+            systemctl disable --now preload-update.timer
+            say "自动更新已关闭 / automatic updates disabled (re-enable: sudo systemctl enable --now preload-update.timer)" ;;
+        --uninstall) uninstall ;;
+        *) usage; return 2 ;;
+    esac
+}
+
+main "$@"
+exit $?

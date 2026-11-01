@@ -1,0 +1,7 @@
+{
+  "uuid": "cursor-tracker@cua",
+  "name": "CUA Cursor Tracker",
+  "description": "Exposes cursor position over D-Bus for CUA Collector",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 3
+}

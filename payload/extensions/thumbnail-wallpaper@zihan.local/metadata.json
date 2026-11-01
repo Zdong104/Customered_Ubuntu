@@ -1,0 +1,6 @@
+{
+  "uuid": "thumbnail-wallpaper@zihan.local",
+  "name": "Thumbnail Wallpaper",
+  "description": "Draw the desktop wallpaper behind the workspace thumbnails at the top of the Activities overview.",
+  "shell-version": ["50"]
+}

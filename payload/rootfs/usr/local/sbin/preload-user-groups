@@ -1,0 +1,18 @@
+#!/bin/sh
+# Give human accounts (uid 1000-59999) the groups the preload apps expect:
+#   everyone : input            (Vocalinux push-to-talk hotkeys + /dev/uinput)
+#   admins   : + adm kvm libvirt docker   (members of "sudo" only; docker is root-equivalent)
+# Triggered by preload-user-groups.path whenever /etc/passwd changes, so a
+# user created by GNOME Initial Setup has the groups before their first session.
+getent passwd | while IFS=: read -r name _ uid _; do
+    [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] || continue
+    want="input"
+    if id -nG "$name" | tr ' ' '\n' | grep -qx sudo; then
+        want="$want adm kvm libvirt docker"
+    fi
+    for g in $want; do
+        getent group "$g" >/dev/null || continue
+        id -nG "$name" | tr ' ' '\n' | grep -qx "$g" || usermod -aG "$g" "$name"
+    done
+done
+exit 0

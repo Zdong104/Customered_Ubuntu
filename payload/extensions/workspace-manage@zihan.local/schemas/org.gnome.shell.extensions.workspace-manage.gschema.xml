@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.workspace-manage"
+          path="/org/gnome/shell/extensions/workspace-manage/">
+    <key name="virtual-workspace-counts" type="s">
+      <default>'{}'</default>
+      <summary>Virtual workspace count per secondary monitor</summary>
+      <description>
+        JSON object, monitor connector -> number of Workspace Islands virtual
+        workspaces. Written by the extension whenever a workspace is added or
+        removed on a secondary monitor. A monitor not listed starts with one.
+        The primary monitor's count is Mutter's own num-workspaces.
+      </description>
+    </key>
+  </schema>
+</schemalist>

@@ -1,0 +1,11 @@
+[Unit]
+Description=Preload first-boot identity setup (SSH host keys)
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service ssh.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/preload-firstboot
+
+[Install]
+WantedBy=multi-user.target

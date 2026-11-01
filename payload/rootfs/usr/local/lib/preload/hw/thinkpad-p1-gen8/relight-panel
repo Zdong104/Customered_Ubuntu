@@ -1,0 +1,103 @@
+#!/bin/bash
+# Relight the internal panel when the i915 C10 PHY fails to come back.
+#
+# Works around the Arrow Lake (8086:7d51) bug where the C10 PHY message bus on
+# port A is unreachable when i915 re-enables eDP-1. The PLL is never programmed,
+# DDI BUF A never goes active, every atomic commit on pipe A times out, and the
+# panel stays dark until some client forces a fresh commit -- which is what
+# fix-display does.
+#
+# We watch the kernel log for the failure itself rather than hooking resume.
+# Of the failures observed so far, only about two thirds followed a resume; the
+# rest had no suspend anywhere near them. Triggering on the symptom catches all
+# of them, and costs nothing when the panel is fine.
+#
+# The thing we have to wait for is mutter, not the kernel. The kernel has
+# already finished failing by the time we see the trigger; it will not recover
+# on its own no matter how long we wait. What blocks us is that mutter runs a
+# single main loop, so while it sits in drm_atomic_commit it answers no D-Bus
+# calls at all -- including the one we need to make.
+#
+# Earlier versions inferred that indirectly, by waiting for the kernel to stop
+# logging flip_done timeouts. That proxy has a blind spot: the first flip_done
+# only lands ~10s after the failing commit starts, so a check made right after
+# the DDI BUF error looks at an empty window and calls it quiet when the storm
+# has not begun. Every observed first-attempt failure came through that path
+# (logged as "quiet after 0s"), while every run that happened to wait the full
+# window succeeded on the first try. So we now ask mutter directly.
+
+set -uo pipefail
+
+TRIGGER='Timeout waiting for DDI BUF A to get active'
+MAX_WAIT=120     # give up waiting for mutter after this long and try anyway
+PROBE_GAP=2      # pause between probes that fail fast rather than time out
+ATTEMPTS=3
+RETRY_GAP=12
+COOLDOWN=150     # ignore further hits after acting, so we cannot loop
+FIX=/usr/local/bin/fix-display
+
+log() { echo "relight-panel: $*"; }
+
+# Poll mutter until it answers. Each failing probe costs its own 3s timeout, so
+# this paces itself; PROBE_GAP only matters when the probe fails immediately,
+# which means mutter is gone rather than busy.
+wait_for_mutter() {
+    local start now
+    start=$(date +%s)
+    while :; do
+        "$FIX" --probe >/dev/null 2>&1 && return 0
+        now=$(date +%s)
+        (( now - start >= MAX_WAIT )) && return 1
+        sleep "$PROBE_GAP"
+    done
+}
+
+last_fix=0
+
+log "watching for: $TRIGGER"
+
+# -n0 so we only see new entries, not the backlog from earlier this boot.
+journalctl -kf -n0 -o cat --grep "$TRIGGER" 2>/dev/null | while read -r _; do
+    now=$(date +%s)
+    if (( now - last_fix < COOLDOWN )); then
+        continue
+    fi
+    last_fix=$now
+
+    # Skip if the panel is not actually in use (docked with the lid shut).
+    edp=$(echo /sys/class/drm/card*-eDP-1 | cut -d' ' -f1)
+    if [[ -e $edp/enabled && $(<"$edp/enabled") != enabled ]]; then
+        log "eDP-1 not enabled, skipping"
+        continue
+    fi
+
+    log "failure detected, waiting for mutter"
+    began=$(date +%s)
+    if wait_for_mutter; then
+        log "mutter responsive after $(( $(date +%s) - began ))s"
+    else
+        log "mutter still blocked after ${MAX_WAIT}s, trying anyway"
+    fi
+
+    for attempt in $(seq 1 $ATTEMPTS); do
+        "$FIX"
+        case $? in
+            0)
+                log "attempt $attempt: relit in $(( $(date +%s) - began ))s"
+                break
+                ;;
+            2)
+                log "lid closed, nothing to relight"
+                break
+                ;;
+            *)
+                if (( attempt == ATTEMPTS )); then
+                    log "gave up after $ATTEMPTS attempts; use Super+Shift+D"
+                else
+                    log "attempt $attempt failed, retrying in ${RETRY_GAP}s"
+                    sleep "$RETRY_GAP"
+                fi
+                ;;
+        esac
+    done
+done

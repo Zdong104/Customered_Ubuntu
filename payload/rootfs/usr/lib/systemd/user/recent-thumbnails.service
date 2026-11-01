@@ -1,0 +1,13 @@
+[Unit]
+Description=Pre-generate thumbnails for GNOME Files' Recent view
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/recent-thumbnails
+Restart=on-failure
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target

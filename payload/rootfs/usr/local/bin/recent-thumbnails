@@ -1,0 +1,83 @@
+#!/usr/bin/python3
+"""Pre-generate thumbnails for files in GNOME Files' Recent view.
+
+Nautilus asks the thumbnailer for the recent:/// URI, which the sandboxed
+glycin thumbnailers cannot read, so the attempt fails and Recent shows a
+generic icon until the file is viewed in its real folder. gvfsd-recent does
+report thumbnail::path for the *target* file, so we create the thumbnail for
+the target file:// URI ourselves whenever recently-used.xbel changes.
+"""
+
+import os
+import sys
+
+import gi
+
+gi.require_version("GnomeDesktop", "4.0")
+from gi.repository import Gio, GLib, GnomeDesktop
+
+XBEL = os.path.join(GLib.get_user_data_dir(), "recently-used.xbel")
+SIZES = (GnomeDesktop.DesktopThumbnailSize.LARGE, GnomeDesktop.DesktopThumbnailSize.XLARGE)
+MAX_ENTRIES = 100  # only the newest entries matter for the Recent view
+
+
+def log(*a):
+    print(*a, file=sys.stderr, flush=True)
+
+
+class Thumbnailer:
+    def __init__(self):
+        self.factories = [GnomeDesktop.DesktopThumbnailFactory.new(s) for s in SIZES]
+        self.pending = None
+        self.monitor = Gio.File.new_for_path(XBEL).monitor_file(Gio.FileMonitorFlags.NONE)
+        self.monitor.connect("changed", self.on_changed)
+        GLib.idle_add(self.scan)
+
+    def on_changed(self, *_):
+        if self.pending:
+            GLib.source_remove(self.pending)
+        self.pending = GLib.timeout_add_seconds(2, self.scan)
+
+    def scan(self):
+        self.pending = None
+        bf = GLib.BookmarkFile()
+        try:
+            bf.load_from_file(XBEL)
+        except GLib.Error as e:
+            log("load failed:", e.message)
+            return False
+        uris = [u for u in bf.get_uris() if u.startswith("file://")]
+        uris.sort(key=lambda u: bf.get_modified_date_time(u).to_unix(), reverse=True)
+        for uri in uris[:MAX_ENTRIES]:
+            self.ensure(uri)
+        return False
+
+    def ensure(self, uri):
+        f = Gio.File.new_for_uri(uri)
+        try:
+            info = f.query_info("standard::content-type,time::modified", Gio.FileQueryInfoFlags.NONE, None)
+        except GLib.Error:
+            return  # file gone
+        mime = info.get_content_type()
+        mtime = info.get_attribute_uint64("time::modified")
+        for fac in self.factories:
+            if fac.lookup(uri, mtime) or fac.has_valid_failed_thumbnail(uri, mtime):
+                continue
+            if not fac.can_thumbnail(uri, mime, mtime):
+                continue
+            try:
+                pix = fac.generate_thumbnail(uri, mime, None)
+                fac.save_thumbnail(pix, uri, mtime, None)
+                log("thumbnailed", uri)
+            except GLib.Error as e:
+                log("failed", uri, e.message)
+                fac.create_failed_thumbnail(uri, mtime, None)
+
+
+def main():
+    Thumbnailer()
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

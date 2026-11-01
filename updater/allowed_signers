@@ -1,0 +1,5 @@
+# Release-signing keys trusted by preload-update (ssh-keygen allowed_signers
+# format). Installed to /etc/preload/allowed_signers. To rotate: add the new
+# key here, release (signed with the OLD key), then sign later releases with
+# the new key and drop the old line in a following release.
+preload-release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINiHNqw240yQzDgnkMLtVxpL+rEWU2oKD48v2fPkZ+PL

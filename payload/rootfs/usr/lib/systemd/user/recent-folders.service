@@ -1,0 +1,12 @@
+[Unit]
+Description=Add recently used folders to GNOME Files' Recent view
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/recent-folders
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

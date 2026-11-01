@@ -1,0 +1,2 @@
+// Re-apply preload tweaks (DING patch, XWayland launchers) after every dpkg run.
+DPkg::Post-Invoke { "[ -x /usr/local/lib/preload/reapply.sh ] && /usr/local/lib/preload/reapply.sh || true"; };

@@ -1,0 +1,8 @@
+{
+  "uuid": "workspace-manage@zihan.local",
+  "name": "Workspace Manage",
+  "description": "macOS Mission Control-style workspaces in the Activities overview: drag a workspace thumbnail to reorder, \"+\" to add one, hover \"×\" to remove one (its windows move to the neighbour). Covers the primary monitor (stock GNOME workspaces) and secondary monitors (Workspace Islands' virtual workspaces). Every monitor starts with one workspace; workspaces you add persist even when empty.",
+  "shell-version": ["50"],
+  "session-modes": ["user", "unlock-dialog"],
+  "settings-schema": "org.gnome.shell.extensions.workspace-manage"
+}

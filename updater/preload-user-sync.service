@@ -1,0 +1,10 @@
+[Unit]
+Description=Preload per-user setup (missing default config files, new extensions)
+After=dbus.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/preload/preload-user-sync
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,112 @@
+{
+  "speech_recognition": {
+    "engine": "whisper_cpp",
+    "language": "auto",
+    "model_size": "medium",
+    "vosk_model_size": "small",
+    "whisper_model_size": "tiny",
+    "whisper_cpp_model_size": "medium",
+    "whisper_cpp_model_variant": "",
+    "simple_second_language": "auto",
+    "show_advanced": true,
+    "parakeet_model_size": "v3-european",
+    "faster_whisper_model_size": "tiny",
+    "vad_sensitivity": 3,
+    "silence_timeout": 2.0,
+    "stop_sound_guard_ms": 200,
+    "voice_commands_enabled": null,
+    "remote_api_url": "",
+    "remote_api_key": "",
+    "remote_api_endpoint": "/inference",
+    "remote_api_model": "whisper-1"
+  },
+  "audio": {
+    "device_index": null,
+    "device_name": null
+  },
+  "sound_effects": {
+    "enabled": true,
+    "tone": "soft"
+  },
+  "playback_duck": {
+    "enabled": false,
+    "percent": 20
+  },
+  "shortcuts": {
+    "toggle_recognition": "left_alt+left_alt",
+    "mode": "push_to_talk",
+    "disable_internal_hotkey": false,
+    "language_shortcuts": []
+  },
+  "ui": {
+    "start_minimized": true,
+    "show_notifications": true,
+    "show_missing_tray_warning": true,
+    "show_overlay": true
+  },
+  "general": {
+    "autostart": true,
+    "first_run": true
+  },
+  "auto_pause": {
+    "enabled": false,
+    "apps": [],
+    "poll_interval_seconds": 5
+  },
+  "model_keepalive": {
+    "enabled": false,
+    "idle_timeout_seconds": 300,
+    "buffer_during_reload": false
+  },
+  "text_injection": {
+    "copy_to_clipboard": false,
+    "auto_capitalize": true,
+    "append_trailing_space": true,
+    "paste_shortcut": "auto",
+    "backend": "auto",
+    "dictate_to_pad": false
+  },
+  "history": {
+    "enabled": true,
+    "max_items": 10,
+    "persist": false
+  },
+  "post_processing": {
+    "script_path": ""
+  },
+  "dictionary": {
+    "enabled": false,
+    "file_path": "",
+    "max_words": 200
+  },
+  "advanced": {
+    "power_user_mode": false,
+    "debug_logging": false,
+    "wayland_mode": false,
+    "whispercpp_no_timestamps": true,
+    "whispercpp_no_context": true,
+    "whispercpp_initial_prompt": "",
+    "whispercpp_language_candidates": "",
+    "whispercpp_temperature": 0.0,
+    "whispercpp_temperature_inc": -1.0,
+    "whispercpp_entropy_thold": 2.4,
+    "whispercpp_logprob_thold": -1.0,
+    "whispercpp_no_speech_thold": 0.6,
+    "whispercpp_n_threads": 0,
+    "whispercpp_gpu_device": null
+  },
+  "updates": {
+    "channel": "stable"
+  },
+  "proxy": {
+    "mode": "system",
+    "protocol": "socks5",
+    "host": "",
+    "port": 1080,
+    "username": "",
+    "password": ""
+  },
+  "gateway_embed": {
+    "lan_publish": false
+  }
+}

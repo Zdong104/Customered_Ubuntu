@@ -1,0 +1,61 @@
+#!/bin/bash
+# Per-user half of preload, run by the preload-user-sync user service at every
+# login (and by preload-update right after an update, for logged-in users).
+# Accounts that existed before preload never got /etc/skel, and enabling an
+# extension is a per-user setting, so:
+#   1. copy preload's /etc/skel files the user does NOT have (never overwrite);
+#   2. enable preload's default extensions that are new to this user.
+# Each file / extension is offered once (remembered in
+# ~/.local/state/preload), so deleting a file or disabling an extension
+# yourself sticks.
+set -u
+MAN=/var/lib/preload/state/manifest/files
+S=${XDG_STATE_HOME:-$HOME/.local/state}/preload
+mkdir -p "$S"
+touch "$S/skel-offered" "$S/extensions-offered"
+
+# 1. skel files
+if [ -r "$MAN" ]; then
+    grep '^etc/skel/' "$MAN" | while IFS= read -r f; do
+        rel=${f#etc/skel/}
+        grep -qxF "$rel" "$S/skel-offered" && continue
+        if [ -f "/$f" ] && [ ! -e "$HOME/$rel" ] && [ ! -L "$HOME/$rel" ]; then
+            mkdir -p "$(dirname "$HOME/$rel")" && cp "/$f" "$HOME/$rel" && echo "added ~/$rel"
+        fi
+        echo "$rel" >> "$S/skel-offered"
+    done
+fi
+
+# 2. extensions: the preload default list (schema default + override, read via
+# the memory backend so the user's own value does not mask it), minus what
+# was offered before; installed system-wide ones only.
+command -v gsettings >/dev/null || exit 0
+default=$(GSETTINGS_BACKEND=memory gsettings get org.gnome.shell enabled-extensions 2>/dev/null) || exit 0
+current=$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null) || exit 0
+disabled=$(gsettings get org.gnome.shell disabled-extensions 2>/dev/null || echo '@as []')
+python3 - "$default" "$current" "$disabled" "$S/extensions-offered" <<'PY' || exit 0
+import ast, os, subprocess, sys
+
+def parse(v):
+    v = v.strip()
+    if v.startswith("@as"):
+        v = v[3:].strip()
+    return list(ast.literal_eval(v)) if v else []
+
+default, current, disabled = (parse(a) for a in sys.argv[1:4])
+offered_path = sys.argv[4]
+offered = set(open(offered_path).read().split())
+new = [u for u in default
+       if u not in offered and os.path.isdir(f"/usr/share/gnome-shell/extensions/{u}")]
+add = [u for u in new if u not in current]
+if add:
+    subprocess.run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", str(current + add)], check=True)
+    keep = [u for u in disabled if u not in add]
+    if keep != disabled:
+        subprocess.run(["gsettings", "set", "org.gnome.shell", "disabled-extensions", str(keep)], check=True)
+    print("enabled extensions:", " ".join(add))
+with open(offered_path, "a") as f:
+    for u in new:
+        f.write(u + "\n")
+PY
+exit 0

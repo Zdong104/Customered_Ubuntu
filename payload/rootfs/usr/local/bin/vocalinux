@@ -1,0 +1,20 @@
+#!/bin/bash
+# Vocalinux wrapper (system-wide install in /opt/vocalinux). Models download
+# per user on first use into ${XDG_DATA_HOME:-~/.local/share}/vocalinux/models.
+VENV=/opt/vocalinux/venv
+export PYTHONNOUSERSITE=1
+export GI_TYPELIB_PATH=/usr/lib/x86_64-linux-gnu/girepository-1.0
+LIBS=""
+for d in "$VENV"/lib/python3*/site-packages "$VENV"/lib/python3*/site-packages/pywhispercpp.libs "$VENV"/lib/python3*/site-packages/pywhispercpp/lib; do
+    if [ -d "$d" ] && ls "$d"/libwhisper*.so* "$d"/libggml*.so* >/dev/null 2>&1; then
+        LIBS="${LIBS:+$LIBS:}$d"
+    fi
+done
+[ -n "$LIBS" ] && export LD_LIBRARY_PATH="$LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+BIN="$VENV/bin/vocalinux"
+[ -x "$BIN" ] || BIN="$VENV/bin/vocalinux"
+# A user added to "input" after login gets it applied via sg until next login.
+if id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx input && ! id -Gn | tr ' ' '\n' | grep -qx input && command -v sg >/dev/null; then
+    exec sg input -c "$(printf '%q ' "$BIN" "$@")"
+fi
+exec "$BIN" "$@"

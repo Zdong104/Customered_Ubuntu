@@ -1,0 +1,12 @@
+work/
+out/
+*.squashfs
+*.iso
+__pycache__/
+# signing keys / secrets must never be committed (defence in depth)
+preload-release
+preload-release.pub
+id_*
+*.key
+*.pem
+leak-patterns.sh

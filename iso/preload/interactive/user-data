@@ -1,0 +1,24 @@
+#cloud-config
+# Preload install, classic: the normal installer pages (language, keyboard,
+# network, disk, account, timezone). The software source is fixed to the
+# preload layer; drivers are handled by /cdrom/preload/late.sh.
+autoinstall:
+  version: 1
+  interactive-sections:
+    - locale
+    - keyboard
+    - network
+    - storage
+    - identity
+    - timezone
+  source:
+    id: ubuntu-desktop
+    search_drivers: false
+  drivers:
+    install: false
+  codecs:
+    install: false
+  late-commands:
+    - bash /cdrom/preload/late.sh
+bootcmd:
+  - ['plymouth', 'display-message', '--text', 'Starting installer...']

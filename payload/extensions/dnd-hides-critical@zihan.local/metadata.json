@@ -1,0 +1,6 @@
+{
+  "uuid": "dnd-hides-critical@zihan.local",
+  "name": "DND Hides Critical Banners",
+  "description": "While Do Not Disturb is on, show no banners at all, critical ones included. They still go to the notification list.",
+  "shell-version": ["50"]
+}

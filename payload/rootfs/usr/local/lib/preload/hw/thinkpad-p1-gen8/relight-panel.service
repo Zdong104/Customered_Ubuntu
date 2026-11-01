@@ -1,0 +1,13 @@
+[Unit]
+Description=Relight internal eDP panel on i915 C10 PHY failure (Arrow Lake workaround)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/relight-panel
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

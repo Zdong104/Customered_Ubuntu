@@ -1,0 +1,15 @@
+kernel:
+  default: linux-generic-hwe-24.04
+sources:
+- default: true
+  description:
+    en: Ubuntu Desktop with the preload software and desktop customizations.
+  id: ubuntu-desktop
+  locale_support: none
+  name:
+    en: Ubuntu Desktop (preload)
+  path: minimal.standard.preload.squashfs
+  size: @SIZE@
+  type: fsimage-layered
+  variant: desktop
+version: 2

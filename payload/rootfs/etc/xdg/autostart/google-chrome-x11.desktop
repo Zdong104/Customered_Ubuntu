@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Google Chrome (XWayland, background)
+Comment=Start Chrome on XWayland at login so fcitx5 candidates position correctly; later launches reuse this process
+Exec=/usr/bin/google-chrome-stable --ozone-platform=x11 --no-startup-window
+TryExec=/usr/bin/google-chrome-stable
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

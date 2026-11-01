@@ -1,0 +1,7 @@
+# Vocalinux grabs the internal keyboard (event3) and re-emits keys through a
+# virtual uinput clone. libinput only pairs disable-while-typing with
+# *internal* keyboards, so tag the clone as internal or palm taps get through.
+[Vocalinux virtual internal keyboard]
+MatchUdevType=keyboard
+MatchName=AT Translated Set 2 keyboard (vocalinux)
+AttrKeyboardIntegration=internal

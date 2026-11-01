@@ -1,0 +1,27 @@
+#cloud-config
+# Preload install, OOBE style: the installer only asks where to install
+# (interactive storage, nothing is wiped without confirmation). No user is
+# created; GNOME Initial Setup asks for language, keyboard, privacy,
+# timezone, name/user/password and hostname on first boot.
+autoinstall:
+  version: 1
+  interactive-sections:
+    - storage
+  source:
+    id: ubuntu-desktop
+    search_drivers: false
+  drivers:
+    install: false          # done by /cdrom/preload/late.sh (offline-safe)
+  codecs:
+    install: false          # already in the preload layer
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  late-commands:
+    - bash /cdrom/preload/late.sh
+  user-data:
+    # no installer user; the first account is created by gnome-initial-setup
+    users: {}
+    locale: en_US.UTF-8
+bootcmd:
+  - ['plymouth', 'display-message', '--text', 'Starting installer...']

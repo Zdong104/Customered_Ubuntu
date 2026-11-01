@@ -1,0 +1,17 @@
+[Unit]
+Description=Apply signed preload desktop configuration releases
+Documentation=https://github.com/Zdong104/Customered_Ubuntu
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/preload-update --timer
+# Background work: low priority and capped, so it never disturbs the desktop.
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=20
+IOWeight=20
+MemoryHigh=3584M
+MemoryMax=4G
+TimeoutStartSec=4h

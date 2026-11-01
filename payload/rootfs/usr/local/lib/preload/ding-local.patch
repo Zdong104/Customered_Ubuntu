@@ -1,0 +1,184 @@
+diff -ruN a/app/dbusInterfaces.js b/app/dbusInterfaces.js
+--- a/app/dbusInterfaces.js	2026-10-29 10:29:52.945858145 -0400
++++ b/app/dbusInterfaces.js	2026-10-29 10:29:52.949104607 -0400
+@@ -129,6 +129,19 @@
+     </interface>
+   </node>`,
+ 
++    // org.gnome.NautilusPreviewer2 (sushi >= 47 dropped the old interface)
++    'org.gnome.NautilusPreviewer2': `<node>
++    <interface name='org.gnome.NautilusPreviewer2'>
++      <method name='ShowFile'>
++        <arg name='uri' type='s' direction='in'/>
++        <arg name='windowHandle' type='s' direction='in'/>
++        <arg name='closeIfAlreadyShown' type='b' direction='in'/>
++        <arg name='activationToken' type='s' direction='in'/>
++      </method>
++      <method name='Close'/>
++    </interface>
++  </node>`,
++
+     // org.gtk.vfs.Metadata
+     'org.gtk.vfs.Metadata': `<node>
+     <interface name='org.gtk.vfs.Metadata'>
+diff -ruN a/app/dbusUtils.js b/app/dbusUtils.js
+--- a/app/dbusUtils.js	2026-10-29 10:29:52.952802205 -0400
++++ b/app/dbusUtils.js	2026-10-29 10:29:52.955983826 -0400
+@@ -497,7 +497,7 @@
+             this._sendNoProxyError(callback);
+             return;
+         }
+-        this.gnomeNautilusPreviewManager.proxy.ShowFileRemote(uri, integer, boolean,
++        this.gnomeNautilusPreviewManager.proxy.ShowFileRemote(uri, '', boolean, '',
+             (result, error) => {
+                 if (callback) {
+                     callback(result, error);
+@@ -961,7 +961,7 @@
+         dbusManagerObject,
+         'org.gnome.NautilusPreviewer',
+         '/org/gnome/NautilusPreviewer',
+-        'org.gnome.NautilusPreviewer',
++        'org.gnome.NautilusPreviewer2',
+         Enums.DBusBus.SESSION,
+         'Nautilus-Sushi'
+     );
+diff -ruN a/app/desktopIconsUtil.js b/app/desktopIconsUtil.js
+--- a/app/desktopIconsUtil.js	2026-10-29 10:29:52.971717676 -0400
++++ b/app/desktopIconsUtil.js	2026-10-29 10:29:52.974709966 -0400
+@@ -32,6 +32,11 @@
+ 
+ const _ = Gettext.gettext;
+ 
++// Origin of the primary monitor; saved icon positions are stored relative to it
++// so docking/undocking (which moves the primary in global coordinates) doesn't
++// push icons onto another monitor.
++var primaryOrigin = [0, 0];
++
+ /**
+  *
+  * @param context
+diff -ruN a/app/desktopManager.js b/app/desktopManager.js
+--- a/app/desktopManager.js	2026-10-29 10:29:52.959188503 -0400
++++ b/app/desktopManager.js	2026-10-29 10:29:52.962113427 -0400
+@@ -85,11 +85,8 @@
+         );
+ 
+         this._primaryIndex = primaryIndex;
+-        if (primaryIndex < desktopList.length) {
+-            this._primaryScreen = desktopList[primaryIndex];
+-        } else {
+-            this._primaryScreen = null;
+-        }
++        this._desktopList = desktopList;
++        this._updatePrimaryScreen();
+         this._clickX = 0;
+         this._clickY = 0;
+         this._dragList = null;
+@@ -326,11 +323,7 @@
+         if (newdesktoplist.length != this._desktopList.length) {
+             this._fileList.forEach(x => x.removeFromGrid(false));
+             this._desktopList = newdesktoplist;
+-            if (this._primaryIndex < this._desktopList.length) {
+-                this._primaryScreen = this._desktopList[this._primaryIndex];
+-            } else {
+-                this._primaryScreen = null;
+-            }
++            this._updatePrimaryScreen();
+             this._createGridWindows();
+             this._placeAllFilesOnGrids(true);
+             return;
+@@ -370,15 +363,31 @@
+                 desktop.resizeGrid();
+             }
+             this._desktopList = newdesktoplist;
++            this._updatePrimaryScreen();
+             this._placeAllFilesOnGrids(true);
+         }
++        this._updatePrimaryScreen();
++    }
++
++    _updatePrimaryScreen() {
+         if (this._primaryIndex < this._desktopList.length) {
+             this._primaryScreen = this._desktopList[this._primaryIndex];
++            DesktopIconsUtil.primaryOrigin = [this._primaryScreen.x, this._primaryScreen.y];
+         } else {
+             this._primaryScreen = null;
++            DesktopIconsUtil.primaryOrigin = [0, 0];
+         }
+     }
+ 
++    // Icons live on the primary monitor only; other monitors are used just when it is full
++    _placementDesktops() {
++        let primary = this._desktops[this._primaryIndex];
++        if (primary && (primary.getDistance(0, 0) != -1)) {
++            return [primary];
++        }
++        return this._desktops;
++    }
++
+     _createGridWindows() {
+         for (let desktop of this._desktops) {
+             desktop.destroy();
+@@ -1612,7 +1621,7 @@
+             }
+             let [itemX, itemY] = fileItem.savedCoordinates;
+             let addedToDesktop = false;
+-            for (let desktop of this._desktops) {
++            for (let desktop of this._placementDesktops()) {
+                 if (desktop.getDistance(itemX, itemY) == 0) {
+                     addedToDesktop = true;
+                     desktop.addFileItemCloseTo(fileItem, itemX, itemY, storeMode);
+@@ -1629,7 +1638,7 @@
+             let minDistance = -1;
+             let [itemX, itemY] = fileItem.savedCoordinates;
+             let newDesktop = null;
+-            for (let desktop of this._desktops) {
++            for (let desktop of this._placementDesktops()) {
+                 let distance = desktop.getDistance(itemX, itemY);
+                 if (distance == -1) {
+                     continue;
+@@ -1665,7 +1674,7 @@
+             }
+             // try first in the designated desktop
+             let assigned = false;
+-            for (let desktop of this._desktops) {
++            for (let desktop of this._placementDesktops()) {
+                 if (desktop.getDistance(x, y) == 0) {
+                     desktop.addFileItemCloseTo(fileItem, x, y, storeMode);
+                     assigned = true;
+@@ -1676,7 +1685,7 @@
+                 continue;
+             }
+             // if there is no space in the designated desktop, try in another
+-            for (let desktop of this._desktops) {
++            for (let desktop of this._placementDesktops()) {
+                 if (desktop.getDistance(x, y) != -1) {
+                     desktop.addFileItemCloseTo(fileItem, x, y, storeMode);
+                     break;
+diff -ruN a/app/fileItem.js b/app/fileItem.js
+--- a/app/fileItem.js	2026-10-29 10:29:52.965113422 -0400
++++ b/app/fileItem.js	2026-10-29 10:29:52.968113417 -0400
+@@ -858,15 +858,20 @@
+     }
+ 
+     get savedCoordinates() {
+-        return this._savedCoordinates;
++        if (this._savedCoordinates == null) {
++            return null;
++        }
++        let [ox, oy] = DesktopIconsUtil.primaryOrigin;
++        return [this._savedCoordinates[0] + ox, this._savedCoordinates[1] + oy];
+     }
+ 
+     set savedCoordinates(pos) {
+         try {
+             let info = new Gio.FileInfo();
+             if (pos != null) {
+-                this._savedCoordinates = [pos[0], pos[1]];
+-                info.set_attribute_string('metadata::nautilus-icon-position', `${pos[0]},${pos[1]}`);
++                let [ox, oy] = DesktopIconsUtil.primaryOrigin;
++                this._savedCoordinates = [pos[0] - ox, pos[1] - oy];
++                info.set_attribute_string('metadata::nautilus-icon-position', `${this._savedCoordinates[0]},${this._savedCoordinates[1]}`);
+             } else {
+                 this._savedCoordinates = null;
+                 info.set_attribute_string('metadata::nautilus-icon-position', '');

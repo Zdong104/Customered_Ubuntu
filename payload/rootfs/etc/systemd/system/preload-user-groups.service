@@ -1,0 +1,9 @@
+[Unit]
+Description=Add human users to preload app groups (input; admins also adm/kvm/libvirt/docker)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/preload-user-groups
+
+[Install]
+WantedBy=multi-user.target
