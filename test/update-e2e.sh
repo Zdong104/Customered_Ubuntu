@@ -55,7 +55,7 @@ mkdir -p "$W"; rm -rf "$W/owner" "$W/remote.git" "$W/keys"; mkdir -p "$W/keys"
 ssh-keygen -q -t ed25519 -N '' -C test-release -f "$W/keys/good"
 ssh-keygen -q -t ed25519 -N '' -C attacker -f "$W/keys/bad"
 echo "preload-release namespaces=\"git\" $(cut -d' ' -f1,2 "$W/keys/good.pub")" > "$W/keys/signers"
-git clone -q "$ROOT" "$W/owner"
+git clone -q --no-tags --single-branch "$ROOT" "$W/owner"   # real release tags would collide with test tags
 O=(git -C "$W/owner" -c user.name=t -c user.email=t@example.invalid -c gpg.format=ssh)
 cp "$W/keys/signers" "$W/owner/updater/allowed_signers"
 sed -i '/^DEB|/d' "$W/owner/payload/sources.conf"
@@ -70,7 +70,7 @@ push --tags
 # --- friend's machine ----------------------------------------------------------------
 docker rm -f "$C" >/dev/null 2>&1 || true
 docker run -d --name "$C" -e container=docker --security-opt writable-cgroups=true \
-    --tmpfs /run --tmpfs /run/lock --cgroupns=private --memory 4g -v "$W:/t:ro" "$IMG" >/dev/null
+    --tmpfs /run --tmpfs /run/lock --cgroupns=private --memory=3g --memory-swap=3g --cpus=2 -v "$W:/t:ro" "$IMG" >/dev/null
 for _ in $(seq 30); do inc 'systemctl is-system-running 2>/dev/null | grep -qE "running|degraded"' && break; sleep 1; done
 ENV="PRELOAD_TEST_REMOTE=file:///t/remote.git PRELOAD_TEST_SIGNERS=/t/keys/signers PRELOAD_SKIP_STEPS='$SKIP'"
 # a file the friend already had, which the payload will overwrite
@@ -139,6 +139,7 @@ echo "$ran" | sed 's/^/   | /'
     grep -q 'desktop defaults' <<< "$ran" && grep -q 'system files' <<< "$ran" &&
     ok "re-ran exactly: debs (retry), extensions, dconf, files" || bad "unexpected set of steps re-ran"
 check "unchanged steps skipped" inc 'grep -q "unchanged: updater" /var/log/preload-update.log && grep -q "unchanged: services" /var/log/preload-update.log && grep -q "unchanged: hw" /var/log/preload-update.log'
+check "workspace-islands not re-fetched for an extension change" inc 'grep -q "islands: 已安装，跳过" /var/log/preload-update.log && ! grep -q "Cloning into" /var/log/preload-update.log'
 check "extension file updated" inc 'tail -1 /usr/share/gnome-shell/extensions/hide-minimized@zihan.local/extension.js | grep -q "e2e change"'
 check "dock icon default now 48" inc '[ "$(GSETTINGS_BACKEND=memory gsettings get org.gnome.shell.extensions.dash-to-dock dash-max-icon-size)" = 48 ]'
 check "dropped file removed" inc '! test -e /usr/share/applications/vocalinux.desktop'
@@ -152,10 +153,34 @@ out=$(inc "$ENV preload-update --now" 2>&1 || true); echo "$out" | sed 's/^/   |
 check "still v2026.11.10 after a newer-signed older version" inc 'grep -qx v2026.11.10 /var/lib/preload/state/version && ! grep -q v2026.11.09 /var/lib/preload/state/history'
 check "--rollback-info works" inc 'preload-update --rollback-info | grep -q "never go backwards"'
 
+echo "== (f) first install on a machine that already has the apps: everything adopted, nothing fetched"
+inc 'set -e
+     for m in @anthropic-ai/claude-code @openai/codex node-gyp nw-gyp; do
+         mkdir -p /usr/local/lib/node_modules/$m; echo "{}" > /usr/local/lib/node_modules/$m/package.json; done
+     mkdir -p /opt/miniconda3/bin /opt/TinyTeX /opt/uv/tools/harbor
+     printf "#!/bin/sh\n" > /opt/miniconda3/bin/conda; printf "#!/bin/sh\n" > /usr/local/bin/tlmgr
+     chmod +x /opt/miniconda3/bin/conda /usr/local/bin/tlmgr
+     d=/opt/vocalinux/venv/lib/python3.14/site-packages/vocalinux-0.dist-info; mkdir -p $d /opt/vocalinux/venv/bin
+     ln -sf /usr/bin/python3 /opt/vocalinux/venv/bin/python
+     IFS="|" read -r repo tag <<< "$(sed -n "s/^VOCALINUX|//p" /var/lib/preload/current/payload/sources.conf)"
+     printf "{\"url\": \"%s\", \"vcs_info\": {\"vcs\": \"git\", \"requested_revision\": \"%s\"}}\n" "$repo" "$tag" > $d/direct_url.json
+     mv /var/lib/preload/state /var/lib/preload/state.saved; : > /var/log/preload-update.log'
+t0=$SECONDS
+out=$(inc "PRELOAD_TEST_REMOTE=file:///t/remote.git PRELOAD_SKIP_STEPS='base repos snaps' preload-update --now" 2>&1 || true)
+dt=$((SECONDS - t0)); echo "$out" | sed 's/^/   | /'
+for k in npm miniconda tinytex uvtool vocalinux islands; do
+    grep -q "$k: 已安装，跳过 / already installed, skipped" <<< "$out" && ok "$k adopted (already installed, skipped)" || bad "$k not skipped"
+done
+[ $dt -lt 120 ] && ok "full first-install run on a populated machine took ${dt}s" || bad "populated full run took ${dt}s"
+check "nothing was downloaded for adopted items" inc '! grep -qE "Cloning into|Downloading|npm (warn|notice)" /var/log/preload-update.log'
+check "notification text asks for re-login after extension changes" inc 'grep -qx extensions /var/lib/preload/state/ran'
+inc 'rm -rf /var/lib/preload/state && mv /var/lib/preload/state.saved /var/lib/preload/state'
+docker rm -f "$C" >/dev/null 2>&1 || true   # one heavy thing at a time
+
 echo "== (e) ISO-style install (chroot mode at v2026.11.01), then a live update"
 docker rm -f "$C2" >/dev/null 2>&1 || true
 rm -rf "$W/v1"; mkdir -p "$W/v1"; git -C "$W/owner" archive v2026.11.01 | tar -x -C "$W/v1"
-docker run --name "$C2" -v "$W:/t:ro" "$IMG" bash -c '
+docker run --name "$C2" --memory=3g --memory-swap=3g --cpus=2 -v "$W:/t:ro" "$IMG" bash -c '
     set -e; mkdir -p /tmp/preload-payload
     cp -a /t/v1/payload/. /tmp/preload-payload/; cp /t/v1/build/gen-override.py /tmp/preload-payload/
     cp -a /t/v1/updater /tmp/preload-payload/updater
@@ -163,7 +188,7 @@ docker run --name "$C2" -v "$W:/t:ro" "$IMG" bash -c '
     rm -rf /tmp/preload-payload' > "$W/chroot.log" 2>&1 && ok "chroot-mode provisioning (ISO build path)" || { bad "chroot-mode provisioning"; tail -20 "$W/chroot.log"; }
 docker commit "$C2" "$IMG-iso" >/dev/null; docker rm -f "$C2" >/dev/null
 docker run -d --name "$C2" -e container=docker --security-opt writable-cgroups=true \
-    --tmpfs /run --tmpfs /run/lock --cgroupns=private --memory 4g -v "$W:/t:ro" "$IMG-iso" /sbin/init >/dev/null
+    --tmpfs /run --tmpfs /run/lock --cgroupns=private --memory=3g --memory-swap=3g --cpus=2 -v "$W:/t:ro" "$IMG-iso" /sbin/init >/dev/null
 for _ in $(seq 30); do docker exec "$C2" bash -c 'systemctl is-system-running 2>/dev/null | grep -qE "running|degraded"' && break; sleep 1; done
 check "image marks its release v2026.11.01" docker exec "$C2" grep -qx v2026.11.01 /var/lib/preload/state/version
 check "timer enabled in image" docker exec "$C2" systemctl is-enabled preload-update.timer

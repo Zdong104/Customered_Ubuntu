@@ -178,6 +178,7 @@ main() {
     info "以后的更新会在后台自动安装，完成后会有通知。/ Future updates install automatically in the background."
     info "查看状态 / status: preload-update --status"
     info "=================================================================="
+    return "$rc"   # 0 complete; 1 complete except optional items (retried in the background)
 }
 
 main "$@"; exit $?

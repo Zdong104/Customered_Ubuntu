@@ -21,7 +21,7 @@
     icon-size: 16px;
 }
 
-/* Hover "x" in a thumbnail's top-left corner. */
+/* Hover "x" hanging off a thumbnail's top-right corner. */
 .workspace-manage-close {
     width: 18px;
     height: 18px;

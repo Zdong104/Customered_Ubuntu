@@ -230,13 +230,17 @@ update() { # now|timer
     apply_tree "$target" "$REL/$target" || rc=$?
     record "$target" "$rc"
     failed=$(paste -sd' ' "$STATE/failed" 2>/dev/null || true)
-    local reboot=""
+    local reboot="" relogin=""
     [ -e /var/run/reboot-required ] && reboot=" 需要重启 / Restart required."
+    # GNOME Shell on Wayland loads extension code and new defaults only at login
+    if grep -qxE 'extensions|dconf' "$STATE/ran" 2>/dev/null; then
+        relogin=" 桌面扩展/设置已更新，注销并重新登录后生效 / Desktop extensions or settings changed: log out and back in to apply."
+    fi
     case $rc in
         0) notify_users normal "桌面配置已更新到 $target" \
-               "Desktop configuration updated to $target. 部分更改在重新登录后生效 / Some changes apply after logging out and in.$reboot" ;;
+               "Desktop configuration updated to $target.$relogin$reboot" ;;
         1) notify_users normal "桌面配置已更新到 $target（部分项目失败）" \
-               "Updated to $target; these will be retried automatically / 将自动重试: $failed.$reboot" ;;
+               "Updated to $target; these will be retried automatically / 将自动重试: $failed.$relogin$reboot" ;;
         *) notify_users critical "桌面配置更新失败 / Desktop update failed" \
                "$target could not be applied ($failed); it will be retried. Details: sudo preload-update --status" ;;
     esac
@@ -249,7 +253,10 @@ summary() { # version rc
     local failed
     failed=$(paste -sd' ' "$STATE/failed" 2>/dev/null || true)
     case $2 in
-        0) say "完成 / done: $1" ;;
+        0) say "完成 / done: $1"
+           if grep -qxE 'extensions|dconf' "$STATE/ran" 2>/dev/null; then
+               say "注销并重新登录后，新的桌面扩展/设置才会生效 / log out and back in for the desktop changes"
+           fi ;;
         1) say "完成，但以下项目失败（会在后台自动重试）/ done, but these failed and will be retried: $failed" ;;
         *) say "失败 / FAILED: $1 not applied (core step failed: $failed). Log: $LOG" ;;
     esac

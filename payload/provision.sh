@@ -99,10 +99,28 @@ backup_once() { # path-relative-to-/ [file-we-will-install]
     install -d "$BACKUP/$(dirname "$1")"; cp -a "/$1" "$BACKUP/$1"
 }
 
+pkg_installed() { dpkg-query -W -f '${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
+skipped() { progress "      $1: 已安装，跳过 / already installed, skipped"; }
+
+# Items (a vendor .deb, a snap, Vocalinux at a tag, ...) that are already on the
+# machine are adopted, not reinstalled: an item is skipped when it is present
+# and its sources.conf line is the one we last installed it from, or we never
+# installed it (the user had it already). A changed line always reinstalls it.
+item_mark() { install -d -m 0755 "$STATE/items"; printf '%s\n' "$2" > "$STATE/items/$1"; }
+want_item() { # key line present-check... -> 0 when the item must be (re)installed
+    local key=$1 line=$2 rec
+    shift 2
+    rec=$(cat "$STATE/items/$key" 2>/dev/null || true)
+    if { [ -z "$rec" ] || [ "$rec" = "$line" ]; } && "$@" >/dev/null 2>&1; then
+        item_mark "$key" "$line"; skipped "$key"; return 1
+    fi
+    return 0
+}
+
 step_base() {
     mapfile -t pkgs < <(grep -vE '^\s*(#|$)' "$P/packages.txt" | tr ' ' '\n' | grep -v '^$')
-    apt_update
     if ! live; then
+        apt_update
         "${APT[@]}" full-upgrade
         "${APT[@]}" install "${pkgs[@]}"
         base_units
@@ -121,9 +139,18 @@ step_base() {
     install -d -m 0755 "$STATE/items"
     dpkg-query -W -f '${Status}' openssh-server 2>/dev/null | grep -q 'install ok installed' ||
         [ -e "$STATE/items/sshd-off" ] || echo pending > "$STATE/items/sshd-off"
-    if ! "${APT[@]}" install "${pkgs[@]}"; then
-        echo "batch install failed; retrying package by package"
-        for p in "${pkgs[@]}"; do "${APT[@]}" install "$p" || bad+=("$p"); done
+    # only what is missing: apt is not even started when nothing is
+    local missing=()
+    for p in "${pkgs[@]}"; do pkg_installed "$p" || missing+=("$p"); done
+    if [ ${#missing[@]} -eq 0 ]; then
+        skipped "${#pkgs[@]} packages"
+    else
+        echo "installing ${#missing[@]} of ${#pkgs[@]} packages: ${missing[*]}"
+        apt_update
+        if ! "${APT[@]}" install "${missing[@]}"; then
+            echo "batch install failed; retrying package by package"
+            for p in "${missing[@]}"; do "${APT[@]}" install "$p" || bad+=("$p"); done
+        fi
     fi
     base_units
     if grep -qx pending "$STATE/items/sshd-off" 2>/dev/null; then
@@ -183,8 +210,19 @@ step_repos() {
     install -m 0644 "$P/rootfs/etc/apt/preferences.d/mozilla" "$P/rootfs/etc/apt/preferences.d/no-firefox-snap" /etc/apt/preferences.d/
     # Chrome's postinst would add a duplicate source and cron job; tell it not to.
     printf 'repo_add_once="false"\nrepo_reenable_on_distupgrade="false"\n' > /etc/default/google-chrome
-    apt_update
     read -r -a p3 <<< "$(conf APT3P)"
+    if live; then
+        # Installed ones are kept current by their vendor repos; Ubuntu's
+        # snap-wrapper "firefox" deb does not count as installed.
+        local missing=() p
+        for p in "${p3[@]}"; do
+            pkg_installed "$p" && ! { [ "$p" = firefox ] && dpkg-query -W -f '${Version}' firefox | grep -q snap; } ||
+                missing+=("$p")
+        done
+        if [ ${#missing[@]} -eq 0 ]; then skipped "${p3[*]}"; return 0; fi
+        p3=("${missing[@]}")
+    fi
+    apt_update
     # Mozilla's firefox (no epoch) "downgrades" Ubuntu's 1:1snap1 snap wrapper
     "${APT[@]}" install --allow-downgrades "${p3[@]}"
     # Some vendor postinsts drop their own .list/.sources next to ours.
@@ -201,15 +239,12 @@ step_repos() {
     apt_update
 }
 
-# Multi-item download steps remember each item's sources.conf line, so a re-run
-# (a sibling failed, or another line changed) does not fetch it again.
-item_done() { [ "$(cat "$STATE/items/$1" 2>/dev/null)" = "$2" ]; }
-item_mark() { install -d -m 0755 "$STATE/items"; printf '%s\n' "$2" > "$STATE/items/$1"; }
-
 step_debs() {
     local bad=() name spec url
     while IFS='|' read -r name spec; do
-        if item_done "deb-$name" "$spec"; then echo "$name: already installed from this line"; continue; fi
+        # NAME is the package name; once installed, updates come from the
+        # vendor's own apt repo or in-app updater, not from re-downloading.
+        want_item "deb-$name" "$spec" pkg_installed "$name" || continue
         url=$(resolve_url "$spec" || true)
         if [ -n "$url" ] && curl -fL --retry 3 -o "$DL/$name.deb" "$url" &&
            "${APT[@]}" install "$DL/$name.deb"; then
@@ -223,19 +258,28 @@ step_debs() {
     [ ${#bad[@]} -eq 0 ] || { echo "FAILED debs: ${bad[*]}"; return 1; }
 }
 
+npm_present() {
+    local m
+    for m in "$@"; do [ -f "/usr/local/lib/node_modules/$m/package.json" ] || return 1; done
+}
+
 step_npm() {
     read -r -a mods <<< "$(conf NPM)"
+    want_item npm "$(conf NPM)" npm_present "${mods[@]}" || return 0
     npm install -g --prefix /usr/local --no-fund --no-audit "${mods[@]}"
     npm cache clean --force
     rm -rf /root/.npm
+    item_mark npm "$(conf NPM)"
 }
 
 step_miniconda() {
-    if [ ! -x /opt/miniconda3/bin/conda ]; then
+    if want_item miniconda "$(conf MINICONDA)" test -x /opt/miniconda3/bin/conda; then
         curl -fL --retry 3 -o "$DL/miniconda.sh" "$(conf MINICONDA)"
-        bash "$DL/miniconda.sh" -b -p /opt/miniconda3
+        bash "$DL/miniconda.sh" -b -u -p /opt/miniconda3
+        /opt/miniconda3/bin/conda clean -afy || true
+        chmod -R a+rX /opt/miniconda3
+        item_mark miniconda "$(conf MINICONDA)"
     fi
-    /opt/miniconda3/bin/conda clean -afy || true
     live || rm -rf /root/.conda /root/.condarc
     # Let any user use conda; envs/pkgs go to ~/.conda because base is root-owned.
     cat > /opt/miniconda3/.condarc <<'EOF'
@@ -245,24 +289,32 @@ envs_dirs:
 pkgs_dirs:
   - ~/.conda/pkgs
 EOF
-    chmod -R a+rX /opt/miniconda3
+    chmod 0644 /opt/miniconda3/.condarc
 }
 
 step_tinytex() {
-    if [ ! -d /opt/TinyTeX ]; then
-        url=$(resolve_url "$(conf TINYTEX)")
-        curl -fL --retry 3 -o "$DL/tinytex.tar.xz" "$url"
-        tar -C /opt -xJf "$DL/tinytex.tar.xz"
-        [ -d /opt/.TinyTeX ] && mv /opt/.TinyTeX /opt/TinyTeX
-    fi
+    want_item tinytex "$(conf TINYTEX)" test -x /usr/local/bin/tlmgr -a -d /opt/TinyTeX || return 0
+    url=$(resolve_url "$(conf TINYTEX)")
+    curl -fL --retry 3 -o "$DL/tinytex.tar.xz" "$url"
+    rm -rf /opt/TinyTeX /opt/.TinyTeX
+    tar -C /opt -xJf "$DL/tinytex.tar.xz"
+    [ -d /opt/.TinyTeX ] && mv /opt/.TinyTeX /opt/TinyTeX
     tl=$(ls -d /opt/TinyTeX/bin/*/ | head -1)
     "$tl/tlmgr" option sys_bin /usr/local/bin
     "$tl/tlmgr" path add
     "$tl/tlmgr" postaction install script xetex 2>/dev/null || true
     chmod -R a+rX /opt/TinyTeX
+    item_mark tinytex "$(conf TINYTEX)"
+}
+
+uv_present() {
+    local t
+    for t in "$@"; do [ -d "/opt/uv/tools/$t" ] || return 1; done
 }
 
 step_uvtool() {
+    read -r -a tools <<< "$(conf UVTOOL)"
+    want_item uvtool "$(conf UVTOOL)" uv_present "${tools[@]}" || return 0
     local uvbin=$DL/uv
     if [ ! -x "$uvbin/uv" ]; then
         url=$(resolve_url "github:astral-sh/uv:uv-x86_64-unknown-linux-gnu.tar.gz")
@@ -271,13 +323,24 @@ step_uvtool() {
     fi
     export UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
            UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_CACHE_DIR=$DL/uv-cache
-    read -r -a tools <<< "$(conf UVTOOL)"
     for t in "${tools[@]}"; do "$uvbin/uv" tool install --force "$t"; done
     chmod -R a+rX /opt/uv
+    item_mark uvtool "$(conf UVTOOL)"
+}
+
+# Vocalinux built from REPO at TAG? (we rewrite its direct_url.json to say so)
+vocalinux_at() {
+    local f
+    [ -x /opt/vocalinux/venv/bin/python ] || return 1
+    for f in /opt/vocalinux/venv/lib/python3*/site-packages/vocalinux-*.dist-info/direct_url.json; do
+        grep -qF "\"url\": \"$1\"" "$f" && grep -qF "\"requested_revision\": \"$2\"" "$f" && return 0
+    done
+    return 1
 }
 
 step_vocalinux() {
     IFS='|' read -r repo tag <<< "$(conf VOCALINUX)"
+    want_item vocalinux "$repo|$tag" vocalinux_at "$repo" "$tag" || return 0
     local src=$DL/vocalinux
     [ -d "$src" ] || git clone --depth 1 --branch "$tag" "$repo" "$src"
     install -d /opt/vocalinux
@@ -330,6 +393,7 @@ PY
         [ -f "$f" ] && printf '{"url": "%s", "vcs_info": {"vcs": "git", "requested_revision": "%s"}}\n' "$repo" "$tag" > "$f"
     done
     chmod -R a+rX /opt/vocalinux
+    item_mark vocalinux "$repo|$tag"
 }
 
 # Live only: in the image, snaps are seeded by build/snaps.py.
@@ -338,18 +402,24 @@ step_snaps() {
     command -v snap >/dev/null || { echo "snapd is not installed"; return 1; }
     local bad=() name ch tracking out s
     while IFS='|' read -r name ch; do
+        # snapd refreshes installed snaps itself; a snap the user already had
+        # keeps its channel unless our line for it changes later
+        want_item "snap-$name" "$ch" snap list "$name" || continue
         tracking=$(snap list "$name" 2>/dev/null | awk 'NR==2{print $4}' || true)
         if [ -n "$tracking" ]; then
-            [ "$tracking" = "$ch" ] || snap refresh --channel="$ch" "$name" || bad+=("$name")
+            if [ "$tracking" = "$ch" ] || snap refresh --channel="$ch" "$name"; then
+                item_mark "snap-$name" "$ch"
+            else
+                bad+=("$name")
+            fi
             continue
         fi
         # confinement is only known to the store: retry with --classic if asked
-        if ! out=$(snap install --channel="$ch" "$name" 2>&1); then
-            if grep -qi classic <<< "$out"; then
-                snap install --classic --channel="$ch" "$name" || bad+=("$name")
-            else
-                echo "$out"; bad+=("$name")
-            fi
+        if out=$(snap install --channel="$ch" "$name" 2>&1) ||
+           { grep -qi classic <<< "$out" && snap install --classic --channel="$ch" "$name"; }; then
+            item_mark "snap-$name" "$ch"
+        else
+            echo "$out"; bad+=("$name")
         fi
     done < <(conf SNAP)
     # Drop the Firefox/Thunderbird snaps only once Mozilla's .deb Firefox is
@@ -379,10 +449,15 @@ step_extensions() {
         rm -rf "${E:?}/$u.preload-new"; cp -r "$d" "$E/$u.preload-new"
         rm -rf "${E:?}/$u"; mv "$E/$u.preload-new" "$E/$u"
     done
+    # workspace-islands comes from upstream at a pinned tag: fetched only when
+    # missing or when the tag changes, not whenever one of our extensions does
     IFS='|' read -r repo tag <<< "$(conf ISLANDS)"
-    local isl=$DL/islands
-    [ -d "$isl" ] || git clone --depth 1 --branch "$tag" "$repo" "$isl"
-    rm -rf "${E:?}/$ISLANDS_UUID"; cp -r "$isl/src" "$E/$ISLANDS_UUID"; cp "$isl/LICENSE" "$E/$ISLANDS_UUID/"
+    if want_item islands "$repo|$tag" test -f "$E/$ISLANDS_UUID/metadata.json"; then
+        local isl=$DL/islands
+        [ -d "$isl" ] || git clone --depth 1 --branch "$tag" "$repo" "$isl"
+        rm -rf "${E:?}/$ISLANDS_UUID"; cp -r "$isl/src" "$E/$ISLANDS_UUID"; cp "$isl/LICENSE" "$E/$ISLANDS_UUID/"
+        item_mark islands "$repo|$tag"
+    fi
     new+=("$ISLANDS_UUID")
     # Extensions an earlier release shipped and this one does not: remove them
     # and their schemas. Only names from our own manifest are ever touched.
@@ -680,7 +755,7 @@ for s in "${steps[@]}"; do
     due+=("$s")
 done
 
-failed=() core_failed=0 n=0
+failed=() ran=() core_failed=0 n=0
 for s in "${due[@]}"; do
     n=$((n + 1))
     progress "[$n/${#due[@]}] $(step_title "$s") ..."
@@ -697,7 +772,10 @@ for s in "${due[@]}"; do
     set -e
     if [ $rc = 0 ]; then
         echo "$h" > "$STATE/steps/$s"
-        progress "      完成 / done ($(( (SECONDS - t0) / 60 )) min)"
+        el=$((SECONDS - t0))
+        if [ $el -lt 120 ]; then el="${el} s"; else el="$((el / 60)) min"; fi
+        progress "      完成 / done ($el)"
+        ran+=("$s")
     else
         rm -f "$STATE/steps/$s"
         failed+=("$s")
@@ -705,7 +783,11 @@ for s in "${due[@]}"; do
         progress "      失败 / FAILED: $s (exit $rc)"
     fi
 done
-if live; then printf '%s\n' "${failed[@]}" | grep -v '^$' > "$STATE/failed" || true; fi
+if live; then
+    printf '%s\n' "${failed[@]}" | grep -v '^$' > "$STATE/failed" || true
+    # what this run changed, for preload-update's notification
+    printf '%s\n' "${ran[@]}" | grep -v '^$' > "$STATE/ran" || true
+fi
 log "done: ${due[*]:-nothing to do}${failed[*]:+; failed: ${failed[*]}}"
 [ $core_failed = 0 ] || exit 2
 [ ${#failed[@]} -eq 0 ] || exit 1

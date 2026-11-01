@@ -50,7 +50,8 @@ export const ADD = Symbol('workspace-manage.add');
 const DRAGGABLE = Symbol('workspace-manage.draggable');
 
 const SHIFT_TIME = 150;
-const CLOSE_MARGIN = 3;
+/** How far the "×" hangs out past the thumbnail's top-right corner. */
+const CLOSE_OVERHANG = 7;
 
 /** The drag in progress, if any. One pointer, one drag. */
 let current = null;
@@ -125,7 +126,7 @@ export function allocateAddButton(strip, thumbnails) {
 }
 
 /**
- * A hover "×" in a thumbnail's top-left corner, where Mission Control has it.
+ * A hover "×" hanging off a thumbnail's top-right corner.
  * `canClose()` is asked on every hover change: never on the last workspace,
  * never mid-drag.
  */
@@ -136,10 +137,23 @@ export function addCloseButton(thumbnail, {close, canClose}) {
         accessible_name: 'Remove workspace',
         visible: false,
     });
-    button.set_position(CLOSE_MARGIN, CLOSE_MARGIN);
+    // Right edge on the thumbnail's right edge, then nudged out past the
+    // corner. The thumbnail clips to itself, so the clip moves down to the
+    // scaled workspace inside it and the overhang stays visible.
+    button.add_constraint(new Clutter.AlignConstraint({
+        source: thumbnail,
+        align_axis: Clutter.AlignAxis.X_AXIS,
+        factor: 1,
+    }));
+    button.set_translation(CLOSE_OVERHANG, -CLOSE_OVERHANG, 0);
     button.connect('clicked', () => close());
     thumbnail.add_child(button);
     thumbnail[CLOSE] = button;
+    const workspace = clipActor(thumbnail);
+    if (workspace) {
+        thumbnail.clip_to_allocation = false;
+        workspace.clip_to_allocation = true;
+    }
 
     const sync = () => syncCloseButton(thumbnail, canClose);
     thumbnail.reactive = true;
@@ -154,6 +168,15 @@ export function addCloseButton(thumbnail, {close, canClose}) {
     button.connect('notify::hover', () => blockClicks(button, button.hover && button.visible));
     button.connect('destroy', () => blockClicks(button, false));
     return button;
+}
+
+/**
+ * The thumbnail's scaled workspace, sized to the porthole: stock thumbnails
+ * keep an offset `_contents` inside a `_viewport`; islands' have `_contents`
+ * only.
+ */
+function clipActor(thumbnail) {
+    return thumbnail._viewport ?? thumbnail._contents ?? null;
 }
 
 function blockClicks(button, block) {
@@ -186,6 +209,11 @@ export function removeCloseButton(thumbnail) {
     blockClicks(button, false);
     thumbnail.disconnect(button._wmHoverId);
     thumbnail.track_hover = false;
+    const workspace = clipActor(thumbnail);
+    if (workspace) {
+        workspace.clip_to_allocation = false;
+        thumbnail.clip_to_allocation = true;
+    }
     button.destroy();
     delete thumbnail[CLOSE];
 }
@@ -198,7 +226,7 @@ export function allocateCloseButton(thumbnail) {
     const [, width] = button.get_preferred_width(-1);
     const [, height] = button.get_preferred_height(width);
     const box = new Clutter.ActorBox();
-    box.set_origin(CLOSE_MARGIN, CLOSE_MARGIN);
+    box.set_origin(thumbnail.allocation.get_width() - width, 0);
     box.set_size(width, height);
     button.allocate(box);
 }
