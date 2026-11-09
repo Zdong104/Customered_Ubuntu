@@ -1,0 +1,6 @@
+{
+  "uuid": "titlebar-below-panel@zihan.local",
+  "name": "Title Bar Below Top Bar",
+  "description": "Never let a window's title bar sit under the GNOME top bar: clamp it below the bar, or past it onto the monitor above.",
+  "shell-version": ["50"]
+}

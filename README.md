@@ -32,7 +32,7 @@
 | 沟通 | 微信、Zoom、Slack、Discord |
 | 编辑 / 办公 | VS Code、Inkscape、PDF Arranger、img2pdf、Showtime 视频播放器、Remmina 远程桌面 |
 | 3D / 设计 | Blender、FreeCAD（edge 版） |
-| 其它 snap | Cheese 摄像头、iCloud for Linux、nvtop（GPU 监视）、astral-uv、View |
+| 其它 snap | Cheese 摄像头、iCloud for Linux、nvtop（GPU 监视）、astral-uv、View、LocalSend（局域网互传文件，类似 AirDrop，登录后在托盘后台运行） |
 | 虚拟化 / 容器 | QEMU + libvirt + virt-manager（含 UEFI/OVMF、TPM 模拟 swtpm）、Docker |
 | 媒体 / 驱动 | 常用解码器（ubuntu-restricted-addons）、Intel 硬件视频解码 |
 | 工具 | cc-switch（Claude Code / Codex 配置切换）、tmux、7zip、zstd、剪贴板工具等 |
@@ -49,20 +49,24 @@
 
 - **fcitx5 拼音**（含云拼音），中英文语言包、Noto CJK 和文鼎字体；新老用户登录后都默认使用 fcitx5（`Ctrl+Space` 切换）。
 - 修复了 Wayland 下 Chrome / Claude 桌面版里**候选框位置错乱**的问题：它们改为在 XWayland 下启动（每次软件包升级后会自动重新应用）。
+  Chrome 网页应用（PWA，例如网页版 Outlook / Teams）的启动器也一样，Chrome 每次重新生成它们后会自动改回。
 
 ### 语音输入：Vocalinux
 
 - 本地离线语音转文字（whisper.cpp，支持 Vulkan GPU 加速，没有 GPU 时自动用 CPU），登录后在后台启动；模型在第一次使用时下载。
 - 附带触控板防误触修复：Vocalinux 会接管内置键盘，导致“打字时禁用触控板”失效，这里通过 libinput quirk 修好了。
+- 文字输入方式默认为 `ydotool`（剪贴板粘贴）：默认的 “auto” 方式在 Wayland 下会丢掉中文。已有用户的配置只要还是 “auto”，会在下次登录时自动改过来。
 
 ### GNOME 扩展
 
 | 扩展 | 作用 |
 |---|---|
-| Workspace Manage | 像 macOS 调度中心一样管理工作区：在概览里拖动缩略图排序，“+” 新建，鼠标悬停时缩略图右上角出现 “×” 可删除（窗口移到相邻工作区）；主屏和副屏都支持。 |
-| Maximize to Own Workspace | 最大化或全屏的窗口自动独占一个工作区，取消最大化后合并回去；副屏也支持。 |
+| Workspace Manage | 像 macOS 调度中心一样管理工作区：在概览里拖动缩略图排序，“+” 新建，鼠标悬停时缩略图右上角出现 “×” 可删除（窗口移到相邻工作区）；主屏和副屏都支持，工作区缩略图可以在两个屏幕之间拖动。拔掉外接显示器时，副屏上的每个工作区在主屏上各自成为一个工作区，而不是全部挤进当前工作区。 |
+| Maximize to Own Workspace | 最大化或全屏的窗口自动独占一个工作区，取消最大化后合并回去；副屏也支持。**分屏（Split View）**：在概览里把一个窗口拖到全屏工作区缩略图的左半或右半，两个窗口各占一半（主屏和副屏都支持）。 |
 | Workspace Islands | 副屏拥有自己独立的一组工作区（GNOME 自带只在主屏有工作区）。 |
-| Hide Minimized | 最小化的窗口不再出现在概览和 Alt+Tab 里，从 Dock 或 Super+Tab 恢复。 |
+| Hide Minimized | 最小化的窗口不再出现在概览和 Alt+Tab 里，从 Dock 或 Super+Tab 恢复（点 Dock 图标展开同一应用的所有窗口时，最小化的也会显示）。 |
+| Title Bar Below Top Bar | 窗口的标题栏永远不会被顶栏挡住（Chrome 网页应用在 XWayland 下常见），拖动时只有鼠标越过顶栏才会把窗口带到上方的屏幕。 |
+| No Sticky Claude | Claude 桌面版窗口只停留在一个工作区，不会“在所有工作区显示”。 |
 | Raise Browser | 在微信等应用里点链接时，把 Chrome 带到最前面（Wayland 下默认不会）。 |
 | Thumbnail Wallpaper | 概览顶部的工作区缩略图显示壁纸，而不是一片灰色。 |
 | DND Hides Critical | 开启勿扰模式后，连“紧急”通知横幅也不弹（例如网页版 Teams 的消息），通知仍进入通知列表。 |
@@ -76,6 +80,8 @@
 
 - **最近使用的文件夹**会出现在“最近”里（GNOME 默认只显示文件），可直接打开或往里拖文件。
 - “最近”里的文件会正确显示**缩略图**。
+- 右键菜单 **“Send with LocalSend”**：把选中的文件或文件夹发到附近的设备。
+- 右键菜单 **“Convert to PDF / Combine Images into PDF”**（选中图片时）：用 View 按文件名顺序合成一个 PDF。
 - 默认列表视图、压缩默认 zip、文件选择框显示路径栏、文件夹排在前面。
 
 ### 桌面默认设置
@@ -95,6 +101,11 @@
 
 - **NVIDIA 显卡**：如果还没有装驱动，自动安装 Ubuntu 推荐的驱动（已有驱动则不碰）。
 - **ThinkPad P1 Gen 8**（按机型识别，其他电脑不受影响）：修复内屏黑屏/闪烁（关闭 PSR、自动重新点亮面板，`Super+Shift+D` 手动修复）、雷电 5 外接显示器、NVIDIA PRIME 按需模式、PipeWire 音频崩溃后自动重启。
+
+### 死机自救
+
+开启 Magic SysRq（`kernel.sysrq = 240`）：桌面完全卡死时，按住 `Alt+PrtSc` 依次按 `E I S U B` 可以安全重启（结束程序、同步磁盘、只读挂载、重启），
+不用长按电源键。
 
 ### 用户组
 
@@ -161,7 +172,9 @@ wget -qO- https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/boot
 It checks the machine first (and changes nothing if a check fails), takes about 30-60 minutes, can be
 re-run to resume, and keeps going if a single optional download fails. Log out and back in once when it
 finishes. It installs the apps, developer toolchains, Chinese input, Vocalinux voice typing, the GNOME
-extensions and desktop defaults listed above. Updates come only from SSH-signed release tags verified against
+extensions (workspace management, Split View, title bars kept below the top bar, ...), LocalSend with a
+"Send with LocalSend" Files menu item, View's "Combine Images into PDF" menu item, Magic SysRq and the
+desktop defaults listed above. Updates come only from SSH-signed release tags verified against
 a pinned key (no branches, no downgrades, no replayed tags, https only); see `preload-update --status`.
 Your own settings always win over the defaults. No personal data of the owner is included.
 

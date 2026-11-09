@@ -24,6 +24,7 @@
 import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as AltTab from 'resource:///org/gnome/shell/ui/altTab.js';
 import {Workspace} from 'resource:///org/gnome/shell/ui/workspace.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 /** Set by workspace-islands' visibility.js on windows it minimized itself. */
 const ISLANDS_HIDDEN = Symbol.for('workspace-islands.hidden');
@@ -33,15 +34,45 @@ function isUserMinimized(window) {
     return window.minimized && window[ISLANDS_HIDDEN] !== true;
 }
 
+/**
+ * Ubuntu Dock's "app spread" (click-action focus-or-appspread) is an overview
+ * filtered to one app's windows, and it is how a minimized window gets found
+ * again, so minimized windows stay in it. Its DockManager is reached through
+ * the same file:// module instance the extension system loaded.
+ */
+const DOCK_UUID = 'ubuntu-dock@ubuntu.com';
+let DockManager = null;
+
+function loadDock() {
+    const dock = Main.extensionManager.lookup(DOCK_UUID);
+    if (!dock?.dir || DockManager)
+        return;
+    import(dock.dir.get_child('docking.js').get_uri())
+        .then(module => {
+            DockManager = module.DockManager ?? null;
+        })
+        .catch(e => console.warn(`hide-minimized: cannot load ubuntu-dock: ${e}`));
+}
+
+function inAppSpread() {
+    try {
+        return DockManager?.getDefault?.()?.appSpread?.isInAppSpread === true;
+    } catch {
+        return false;
+    }
+}
+
 export default class HideMinimizedExtension extends Extension {
     enable() {
         this._injector = new InjectionManager();
+        loadDock();
 
         const workspace = Workspace?.prototype;
         if (typeof workspace?._isOverviewWindow === 'function') {
             this._injector.overrideMethod(workspace, '_isOverviewWindow',
                 originalMethod => function (window) {
-                    return !isUserMinimized(window) && originalMethod.call(this, window);
+                    return (!isUserMinimized(window) || inAppSpread()) &&
+                        originalMethod.call(this, window);
                 });
         } else {
             console.warn('hide-minimized: Workspace._isOverviewWindow not found');

@@ -9,10 +9,13 @@
  *                                     anyway, or there is nowhere to put "+".
  *   ThumbnailsBox.addThumbnails       every thumbnail it makes gets the drag,
  *                                     the "×", and the "+" on the strip.
- *   ThumbnailsBox.handleDragOver/acceptDrop   reorder drags first, everything
- *                                     else (windows, apps, xdnd) as before.
+ *   ThumbnailsBox.handleDragOver/acceptDrop   reorder drags first (and
+ *                                     workspaces dragged in from a secondary
+ *                                     monitor's strip), everything else
+ *                                     (windows, apps, xdnd) as before.
  *   ThumbnailsBox.vfunc_get_preferred_width/height, vfunc_allocate
- *                                     room for "+" after the last thumbnail.
+ *                                     room for "+" after the last thumbnail,
+ *                                     and the insertion bar of a foreign drag.
  *   WorkspaceThumbnail._addWindowClone   window clones inside a thumbnail no
  *                                     longer start a window drag: a drag that
  *                                     starts on a thumbnail always moves the
@@ -20,6 +23,12 @@
  *                                     on the secondary monitors' strip, whose
  *                                     previews were never draggable. Windows
  *                                     are still dragged from the big view.
+ *   ThumbnailsBox._updateStates       recomputes the stock "indicator still
+ *                                     sliding" flag before the stock code
+ *                                     trusts it (see the override), so a
+ *                                     workspace removed or added while the
+ *                                     overview is open leaves or joins the
+ *                                     strip at once.
  *
  * Thumbnails are rebuilt on every overview entry; the strip itself lives as
  * long as the overview.
@@ -82,14 +91,17 @@ export class PrimaryStrip {
             if (Strip.isReorderSource(source)) {
                 return Strip.isOurDrag(source, this)
                     ? Strip.dragOver(x)
-                    : Strip.dragOverOther();
+                    : Strip.dragOverOther(source, this._wmAdapter, x);
             }
             return original.call(this, source, actor, x, y, time);
         });
 
         inj.overrideMethod(box, 'acceptDrop', original => function (source, actor, x, y, time) {
-            if (Strip.isReorderSource(source))
-                return Strip.isOurDrag(source, this) && Strip.drop();
+            if (Strip.isReorderSource(source)) {
+                return Strip.isOurDrag(source, this)
+                    ? Strip.drop()
+                    : Strip.dropOther(source, this._wmAdapter, x);
+            }
             return original.call(this, source, actor, x, y, time);
         });
 
@@ -119,7 +131,30 @@ export class PrimaryStrip {
                 this.set_allocation(box_);
             }
             Strip.allocateAddButton(this, this._thumbnails);
+            Strip.allocateCloseButtons(this._thumbnails);
+            Strip.allocateDropMarker(this);
         });
+
+        // Stock caches whether the active-workspace highlight is still
+        // sliding (_animatingIndicator) and _updateStates does nothing while
+        // it is set: no removed thumbnail slides out, no added one comes in.
+        // The cache is refreshed on the workspace adjustment's notify::value
+        // and, only while the overview is open, on active-workspace-changed.
+        // A touchpad swipe outside the overview (WorkspaceAnimationController
+        // ._switchWorkspaceEnd) eases the adjustment to the new workspace
+        // first and activates it afterwards, so the last refresh sees
+        // value !== active and nothing ever clears the flag. Every later
+        // overview then kept removed workspaces' thumbnails (and hid added
+        // ones) until it was closed and its strip rebuilt (2026-11-04).
+        // Recompute the flag from the live values, as stock would have.
+        if (typeof box._updateStates === 'function') {
+            inj.overrideMethod(box, '_updateStates', original => function (...args) {
+                const active = global.workspace_manager.get_active_workspace_index();
+                if (this._scrollAdjustment)
+                    this._animatingIndicator = this._scrollAdjustment.value !== active;
+                return original.call(this, ...args);
+            });
+        }
 
         inj.overrideMethod(thumb, '_addWindowClone', original => function (...args) {
             const clone = original.call(this, ...args);
@@ -152,6 +187,7 @@ export class PrimaryStrip {
                 undecorateThumbnail(thumbnail);
             box[Strip.ADD]?.destroy();
             delete box[Strip.ADD];
+            Strip.removeDropMarker(box);
             delete box._wmAdapter;
             box.disconnectObject(this);
             box.queue_relayout();
@@ -219,6 +255,8 @@ export class PrimaryStrip {
                 return false;
             },
             onDragChanged: () => this._syncBox(box),
+            place: {kind: 'primary'},
+            canTake: () => this.canTake(),
         };
         return box._wmAdapter;
     }
@@ -246,6 +284,12 @@ export class PrimaryStrip {
 
     _canRemove() {
         return global.workspace_manager.n_workspaces > 1;
+    }
+
+    /** Room for a workspace moved here from another monitor (static only). */
+    canTake() {
+        return !Meta.prefs_get_dynamic_workspaces() &&
+            global.workspace_manager.n_workspaces < MAX_WORKSPACES;
     }
 
     // ---- operations ------------------------------------------------------------

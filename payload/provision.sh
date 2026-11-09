@@ -549,13 +549,15 @@ EOF
         systemctl daemon-reload || true
         udevadm control --reload 2>/dev/null || true
         modprobe uinput 2>/dev/null || true
+        sysctl -q -p /etc/sysctl.d/90-sysrq.conf 2>/dev/null || true
     fi
 }
 
 step_services() {
     if live; then systemctl daemon-reload; fi
     systemctl enable preload-user-groups.path preload-user-groups.service preload-firstboot.service
-    systemctl --global enable recent-folders.service recent-thumbnails.service
+    systemctl --global enable recent-folders.service recent-thumbnails.service \
+        chrome-pwa-x11.path chrome-pwa-x11.service
     if live; then
         # existing accounts get the app groups now (effective at next login)
         systemctl start preload-user-groups.path || true
@@ -668,7 +670,7 @@ step_title() {
         tinytex)    echo "安装 TinyTeX (LaTeX)" ;;
         uvtool)     echo "安装 uv 工具 / uv tools (harbor)" ;;
         vocalinux)  echo "安装 Vocalinux 语音输入（需编译，较慢）/ voice input (compiles, slow)" ;;
-        snaps)      echo "安装 Snap 应用：Blender、Slack、Discord ... / snaps" ;;
+        snaps)      echo "安装 Snap 应用：Blender、Slack、Discord、LocalSend ... / snaps" ;;
         extensions) echo "安装 GNOME 扩展 / GNOME extensions" ;;
         dconf)      echo "应用桌面默认设置 / desktop defaults" ;;
         files)      echo "安装系统文件与配置 / system files" ;;

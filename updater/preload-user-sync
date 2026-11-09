@@ -26,6 +26,35 @@ if [ -r "$MAN" ]; then
     done
 fi
 
+# 1b. one-time migrations of files an earlier release's skel gave the user.
+# Vocalinux: the "auto" text-injection backend (the desktop portal) drops
+# Chinese text; preload now defaults to "ydotool". Only a config that still says
+# "auto" is changed, and never while Vocalinux runs (it keeps its settings in
+# memory and could write "auto" back): then, or while there is no config yet,
+# it is retried at the next login. Done once per user.
+VC=${XDG_CONFIG_HOME:-$HOME/.config}/vocalinux/config.json
+if ! grep -qxF vocalinux-ydotool "$S/migrations" 2>/dev/null && [ -f "$VC" ] &&
+   ! pgrep -u "$(id -u)" -f '/opt/vocalinux/' >/dev/null 2>&1; then
+    python3 - "$VC" <<'PY' && echo vocalinux-ydotool >> "$S/migrations"
+import json, os, sys
+p = sys.argv[1]
+try:
+    with open(p) as f:
+        cfg = json.load(f)
+except (OSError, ValueError):
+    sys.exit(0)                 # unreadable: leave it alone for good
+ti = cfg.get("text_injection")
+if isinstance(ti, dict) and ti.get("backend") == "auto":
+    ti["backend"] = "ydotool"
+    tmp = p + ".preload-new"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, p)
+    print("vocalinux: text_injection.backend auto -> ydotool")
+PY
+fi
+
 # 2. extensions: the preload default list (schema default + override, read via
 # the memory backend so the user's own value does not mask it), minus what
 # was offered before; installed system-wide ones only.

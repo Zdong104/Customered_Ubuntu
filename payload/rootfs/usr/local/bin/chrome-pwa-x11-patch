@@ -1,0 +1,13 @@
+#!/bin/sh
+# Force Chrome PWA launchers (~/.local/share/applications/chrome-*-*.desktop)
+# onto XWayland so fcitx5 candidates sit at the cursor, like the Chrome and
+# Claude launchers that reapply.sh rewrites. Chrome regenerates these files;
+# the chrome-pwa-x11.path user unit re-runs this on every change, and the
+# .service also runs once at login.
+for f in "${XDG_DATA_HOME:-$HOME/.local/share}"/applications/chrome-*-*.desktop; do
+  [ -f "$f" ] || continue
+  if grep '^Exec=/opt/google/chrome/google-chrome ' "$f" | grep -vq -- '--ozone-platform=x11'; then
+    sed -i '/--ozone-platform=x11/!s|^Exec=/opt/google/chrome/google-chrome |Exec=/opt/google/chrome/google-chrome --ozone-platform=x11 |' "$f"
+  fi
+done
+exit 0

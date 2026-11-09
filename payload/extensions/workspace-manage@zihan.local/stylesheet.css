@@ -37,3 +37,16 @@
 .workspace-manage-close StIcon {
     icon-size: 10px;
 }
+
+/* Where a workspace dragged in from another monitor's strip will land. */
+.workspace-manage-drop-marker {
+    width: 4px;
+    border-radius: 2px;
+    background-color: -st-accent-color;
+}
+
+/* A strip a workspace dragged in from another monitor would drop on. */
+.workspace-thumbnails.workspace-manage-drop-target {
+    background-color: rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+}

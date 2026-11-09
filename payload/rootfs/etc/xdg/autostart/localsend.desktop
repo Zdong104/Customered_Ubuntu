@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=LocalSend
+Comment=Start LocalSend minimized to tray at login
+Exec=/snap/bin/localsend --hidden
+TryExec=/snap/bin/localsend
+Icon=/snap/localsend/current/meta/gui/localsend.png
+StartupNotify=false
+Terminal=false
+X-GNOME-Autostart-enabled=true

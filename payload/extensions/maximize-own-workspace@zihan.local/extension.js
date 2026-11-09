@@ -38,14 +38,36 @@
  * isolation record. Monitor hotplugs, and Workspace Islands' own enable /
  * reapply / settle passes, are absorbed: the snapshot is retaken, nothing acts.
  * Nothing runs while a mouse/keyboard grab (window drag) is in progress.
+ *
+ * Reconcile: absorbing means a change made while the layout settles is never
+ * seen as one (2026-11-04: undocking put the Claude window, un-stuck by
+ * no-sticky-claude, on maximized Chrome's workspace; the overlap became the
+ * baseline and stayed). So once the layout has settled, and after enable()
+ * (which starts a settle period of its own), the state itself is checked:
+ * every place that breaks the rule is split with the same isolate/arrive
+ * moves a live change would have used (_reconcile).
+ *
+ * Split View (split.js, SPLIT_VIEW): in the overview, a window dropped on the
+ * left/right half of a full-screen space's thumbnail shares that space 50/50
+ * with its window. The pair is part of the rule: a workspace holding a split
+ * pair holds only that pair (holdsPlace). _act asks split.js first which
+ * pairs ended (a partner closed, minimized, left, or was maximized) and has
+ * the partner left behind maximized again at the end. A pair whose windows
+ * stop tiling the work area (a half dragged out, resized off, Super+Down)
+ * is an exit instead: split.js drops the pair and its isolation records, so
+ * both stay put as normal windows on what is now an ordinary shared
+ * workspace; nothing here sends the host home (it has no record left).
  */
 
+import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {ExtensionState} from 'resource:///org/gnome/shell/misc/extensionUtils.js';
+
+import {SplitView, isPaired, stampMaxOn} from './split.js';
 
 const ISLANDS_UUID = 'workspace-islands@danielbernalo.github.io';
 const MANAGE_UUID = 'workspace-manage@zihan.local';
@@ -54,9 +76,13 @@ const MANAGE_UUID = 'workspace-manage@zihan.local';
 const ISLANDS_HIDDEN = Symbol.for('workspace-islands.hidden');
 
 /**
- * Isolation record: { mates: Meta.Window[], created: boolean }, the windows a
- * maximized window was split from, and whether the split made a workspace. Kept on the window (like workspace-islands' own notes) so it
+ * Isolation record: { mates: Meta.Window[], created: boolean, reconciled? },
+ * the windows a maximized window was split from, and whether the split made a
+ * workspace. Kept on the window (like workspace-islands' own notes) so it
  * survives the disable/enable the shell does around a lock screen.
+ * `reconciled`: the split was made by _reconcile from a pile-up nobody chose
+ * (e.g. an undock); merging back then only ever goes to surviving mates,
+ * never to the nearest unrelated workspace (_mergeTarget's fallback).
  */
 const ISOLATION = Symbol.for('maximize-own-workspace.isolation');
 
@@ -74,6 +100,13 @@ const SETTLE_MS = 4000;
 
 /** Also move a new non-maximized window that opens on a maximized one's workspace. */
 const SPLIT_NEW_WINDOWS = true;
+
+/**
+ * Split View (split.js): drag a window onto a full-screen space's thumbnail
+ * (left or right half) to share it 50/50. A workspace holding a split pair
+ * holds only that pair, as a full-screen space holds only its window.
+ */
+const SPLIT_VIEW = true;
 
 /**
  * Apps whose windows are overlays, never workspace members. On Wayland GNOME
@@ -103,6 +136,11 @@ function log(message) {
 
 function isMax(window) {
     return window.is_maximized() || window.is_fullscreen();
+}
+
+/** Holds its place alone: maximized/fullscreen, or half of a split pair. */
+function holdsPlace(window) {
+    return isMax(window) || isPaired(window);
 }
 
 /** Minimized by the user, as opposed to hidden by workspace-islands. */
@@ -174,23 +212,28 @@ export default class MaximizeOwnWorkspace extends Extension {
         this._gone = [];
         this._signals = [];
         this._busy = false;
-        this._grabbing = false;
+        this._grab = null; // {window, op, since} from grab-op-begin; see _grabbing
         this._laterId = 0;
         this._settleId = 0;
         this._layoutChanging = false;
         this._lastRegistry = null;
         this._lastPrimary = -1;
+        this._split = null;
+        if (SPLIT_VIEW) {
+            this._split = new SplitView(this);
+            this._split.enable();
+        }
 
         this._connect(global.display, 'window-created', (_d, window) => {
             this._trackWindow(window);
             this._schedule();
         });
         this._connect(global.display, 'window-entered-monitor', () => this._schedule());
-        this._connect(global.display, 'grab-op-begin', () => {
-            this._grabbing = true;
+        this._connect(global.display, 'grab-op-begin', (_d, window, op) => {
+            this._grab = {window, op, since: GLib.get_monotonic_time()};
         });
         this._connect(global.display, 'grab-op-end', () => {
-            this._grabbing = false;
+            this._grab = null;
             this._schedule();
         });
         this._connect(global.window_manager, 'map', () => this._schedule());
@@ -206,10 +249,17 @@ export default class MaximizeOwnWorkspace extends Extension {
         }
 
         this._absorb(this._context());
+        // Whatever happened while we were off (lock screen, undock with the
+        // screen locked) was never seen as a change. Reconcile once the
+        // layout has been quiet for SETTLE_MS; islands, enabled after us,
+        // restarts that wait through its registry change.
+        this._layoutChanged();
         console.log('maximize-own-workspace: enabled');
     }
 
     disable() {
+        this._split?.disable();
+        this._split = null;
         if (this._laterId) {
             global.compositor.get_laters().remove(this._laterId);
             this._laterId = 0;
@@ -249,7 +299,12 @@ export default class MaximizeOwnWorkspace extends Extension {
         const ids = [
             window.connect('workspace-changed', schedule),
             window.connect('notify::maximized-horizontally', schedule),
-            window.connect('notify::maximized-vertically', schedule),
+            window.connect('notify::maximized-vertically', () => {
+                // Where Mutter took its restore rect (split.js MAX_ON).
+                if (window.maximized_vertically)
+                    stampMaxOn(window);
+                schedule();
+            }),
             window.connect('notify::fullscreen', schedule),
             window.connect('notify::minimized', schedule),
             window.connect('notify::on-all-workspaces', schedule),
@@ -287,21 +342,100 @@ export default class MaximizeOwnWorkspace extends Extension {
         if (this._settleId)
             GLib.Source.remove(this._settleId);
         this._settleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SETTLE_MS, () => {
+            if (this._grabbing)
+                return GLib.SOURCE_CONTINUE; // not mid-drag; ask again later
+            const ctx = this._context();
+            if (ctx.registry !== this._lastRegistry || ctx.primary !== this._lastPrimary) {
+                // Islands or the primary changed without a sweep noticing:
+                // settle again from now.
+                this._absorb(ctx);
+                return GLib.SOURCE_CONTINUE;
+            }
             this._settleId = 0;
             this._layoutChanging = false;
-            const ctx = this._context();
-            this._absorb(ctx);
+            this._gone = [];
             this._busy = true;
             try {
+                this._split?.validate(ctx);
                 this._collect(ctx);
+                this._reconcile(ctx);
             } catch (e) {
                 console.error(`maximize-own-workspace: ${e}\n${e.stack}`);
             } finally {
                 this._busy = false;
+                this._absorb(ctx);
             }
             return GLib.SOURCE_REMOVE;
         });
         GLib.Source.set_name_by_id(this._settleId, '[maximize-own-workspace] monitor settle');
+    }
+
+    /**
+     * Whether a window drag/resize grab is in progress. A grab-op-begin whose
+     * grab-op-end never comes (2026-11-08: one right after login) used to
+     * leave a plain flag stuck, which silently froze every sweep and the
+     * monitor settle until the next window drag: no full-screen spaces, no
+     * split view. So the recorded grab is only believed while it can still be
+     * live: its window is managed, and a mouse grab still has a button held
+     * (1 s grace for the press itself); a keyboard grab gets 2 minutes.
+     */
+    get _grabbing() {
+        const g = this._grab;
+        if (!g)
+            return false;
+        const ageMs = (GLib.get_monotonic_time() - g.since) / 1000;
+        const keyboard = (g.op & 0x100) !== 0; // META_GRAB_OP_WINDOW_FLAG_KEYBOARD
+        let stale = !g.window || g.window.get_compositor_private?.() === null;
+        if (!stale && keyboard) {
+            stale = ageMs > 120000;
+        } else if (!stale && ageMs > 1000) {
+            const [, , mods] = global.get_pointer();
+            const buttons = Clutter.ModifierType.BUTTON1_MASK |
+                Clutter.ModifierType.BUTTON2_MASK | Clutter.ModifierType.BUTTON3_MASK;
+            stale = (mods & buttons) === 0;
+        }
+        if (stale) {
+            console.warn(`maximize-own-workspace: dropping a stale grab (op ${g.op}, ${Math.round(ageMs)} ms, no grab-op-end)`);
+            this._grab = null;
+            this._schedule();
+            return false;
+        }
+        return true;
+    }
+
+    // ---- API for workspace-manage@zihan.local (strip.js) ---------------------
+
+    /**
+     * A workspace thumbnail dragged in the primary strip: workspace `ws`'s
+     * over the thumbnail `thumb` (stock WorkspaceThumbnail). If `ws` is a
+     * full-screen space and `thumb` one too that a split fits, the half under
+     * the pointer is lit and returned ('left' / 'right'); else null, unlit.
+     */
+    thumbnailSplitHover(ws, thumb) {
+        return this._split?.thumbHover(ws, thumb) ?? null;
+    }
+
+    thumbnailSplitClear() {
+        this._split?.thumbClear();
+    }
+
+    /** Dropped there: true if the two spaces became a split pair (`ws` then goes). */
+    thumbnailSplitDrop(ws, thumb) {
+        return this._split?.thumbDrop(ws, thumb) ?? false;
+    }
+
+    /*
+     * A window dragged over / dropped on a Workspace Islands thumbnail of a
+     * secondary strip (workspace-manage islands.js; stock primary
+     * thumbnails are patched by split.js itself). `ws` above may also be
+     * {kind: 'virt', state, group} for an islands thumbnail being dragged.
+     */
+    windowSplitHover(thumb, window) {
+        return this._split?.windowHover(thumb, window) ?? null;
+    }
+
+    windowSplitDrop(thumb, window) {
+        return this._split?.windowDrop(thumb, window) ?? false;
     }
 
     _schedule() {
@@ -386,7 +520,12 @@ export default class MaximizeOwnWorkspace extends Extension {
             loc,
             eligible,
             max: isMax(window),
-            userMin: isUserMinimized(window),
+            // On the primary islands parks nothing: a window minimized there
+            // is out of sight however it got minimized (an islands-parked one
+            // after an undock is about to be shown by workspace-manage), and
+            // gets no workspace of its own while it is (2026-11-06: undocked
+            // parked windows were split to fresh workspaces that looked empty).
+            userMin: virtual ? isUserMinimized(window) : window.minimized,
             mapped: window.mapped,
         };
     }
@@ -431,7 +570,7 @@ export default class MaximizeOwnWorkspace extends Extension {
     }
 
     _hasMax(loc, ctx, except) {
-        return this._members(loc, ctx).some(w => w !== except && isMax(w));
+        return this._members(loc, ctx).some(w => w !== except && holdsPlace(w));
     }
 
     _isActive(loc) {
@@ -486,6 +625,10 @@ export default class MaximizeOwnWorkspace extends Extension {
     }
 
     _act(ctx) {
+        // Split pairs that no longer hold end first; the partner left behind
+        // becomes a full-screen space again after the moves below.
+        const regrow = this._split?.check(ctx) ?? [];
+
         const gone = this._gone;
         this._gone = [];
         for (const g of gone)
@@ -502,6 +645,10 @@ export default class MaximizeOwnWorkspace extends Extension {
         };
 
         for (const window of this._windows()) {
+            // Split View is moving it (from a secondary monitor, or back to
+            // its half): its arrival is split.js's, not a rule's.
+            if (this._split?.inTransit(window))
+                continue;
             const now = this._describe(window, ctx);
             const prev = this._snapshot.get(window);
 
@@ -565,6 +712,128 @@ export default class MaximizeOwnWorkspace extends Extension {
             this._arrive(group, ctx);
         for (const window of isolations)
             this._isolate(window, ctx);
+        this._split?.finish(regrow, ctx);
+    }
+
+    // ---- reconcile -----------------------------------------------------------
+
+    /**
+     * Split every place that breaks the rule as it stands: 2+ maximized
+     * windows, or a maximized one plus others. Run once the layout has
+     * settled, where the diff in _act() cannot see what changed. "Members"
+     * are what _act() counts too, so EXEMPT_APPS, transients, skip-taskbar,
+     * user-minimized and (on the primary) sticky windows never trigger it.
+     *
+     * One window per place stays (_keeper). If it is maximized, the rest
+     * leave as when it is maximized (_isolate: fresh place before it, MADE,
+     * isolation record on the keeper). If it is a normal window, each
+     * maximized one leaves as an arrival would (_arrive: fresh place after,
+     * record on the window that left). A place made here can itself break
+     * the rule (two maximized windows moved out together), so repeat until
+     * nothing changes; every pass either resolves a place or moves nothing.
+     */
+    _reconcile(ctx) {
+        const passes = this._windows().length + 1;
+        for (let pass = 0; pass < passes; pass++) {
+            const before = this._layoutKey(ctx);
+            for (const loc of this._violations(ctx)) {
+                const members = this._members(loc, ctx);
+                if (members.some(isPaired)) {
+                    // A split pair keeps its place; anyone else leaves.
+                    for (const window of members.filter(w => !isPaired(w))) {
+                        log(`reconcile: "${window.get_title()}" shares a split pair's workspace`);
+                        const d = this._describe(window, ctx);
+                        if (d.eligible && sameLoc(d.loc, loc))
+                            this._arrive({loc: d.loc, windows: [window]}, ctx, {reconciled: true});
+                    }
+                    continue;
+                }
+                if (members.length < 2 || !members.some(isMax))
+                    continue; // resolved by an earlier move this pass
+                const keeper = this._keeper(members, loc);
+                const where = loc.kind === 'real'
+                    ? `workspace ${loc.ws.index() + 1}`
+                    : `virtual workspace ${loc.idx + 1} on ${loc.state.connector}`;
+                log(`reconcile: ${members.length} windows share ${where} ` +
+                    `with a maximized one; keeping "${keeper.get_title()}"`);
+                if (isMax(keeper)) {
+                    this._isolate(keeper, ctx, {reconciled: true});
+                } else {
+                    const leaving = members.filter(w => isMax(w));
+                    for (const window of leaving) {
+                        const d = this._describe(window, ctx);
+                        if (d.eligible && sameLoc(d.loc, loc))
+                            this._arrive({loc: d.loc, windows: [window]}, ctx, {reconciled: true});
+                    }
+                }
+            }
+            if (this._layoutKey(ctx) === before)
+                return;
+        }
+    }
+
+    /** Places breaking the rule, one entry each. */
+    _violations(ctx) {
+        const places = new Map();
+        const moving = w => this._split?.inTransit(w) ?? false;
+        for (const window of this._windows()) {
+            if (moving(window))
+                continue;
+            const d = this._describe(window, ctx);
+            if (!d.eligible || d.userMin || d.loc.kind === 'none')
+                continue;
+            const key = locKey(d.loc);
+            if (!places.has(key))
+                places.set(key, d.loc);
+        }
+        return [...places.values()].filter(loc => {
+            const members = this._members(loc, ctx);
+            if (members.some(moving))
+                return false; // Split View is mid-move there; not a pile-up
+
+            if (members.some(isPaired))
+                return members.some(w => !isPaired(w));
+            return members.length > 1 && members.some(isMax);
+        });
+    }
+
+    /**
+     * Which window keeps a place: the focused one (or the one owning the
+     * focused dialog), else the most recently used maximized one, by the
+     * workspace's MRU list (Alt+Tab's order; the active workspace's for a
+     * virtual place, whose windows are on all of them). Ties and windows
+     * missing from that list go by user time, then the older window, so the
+     * choice is stable across passes.
+     */
+    _keeper(members, loc) {
+        const focus = global.display.focus_window;
+        const focused = focus ? rootOf(focus) : null;
+        if (focused && members.includes(focused))
+            return focused;
+
+        let mru = [];
+        try {
+            const ws = loc.kind === 'real' ? loc.ws : global.workspace_manager.get_active_workspace();
+            mru = global.display.get_tab_list(Meta.TabList.NORMAL_ALL, ws);
+        } catch (e) {
+            console.warn(`maximize-own-workspace: no MRU list: ${e}`);
+        }
+        const rank = w => {
+            const i = mru.indexOf(w);
+            return i < 0 ? mru.length : i;
+        };
+        return members.filter(isMax).sort((a, b) =>
+            rank(a) - rank(b) ||
+            (b.get_user_time() >>> 0) - (a.get_user_time() >>> 0) ||
+            a.get_stable_sequence() - b.get_stable_sequence())[0];
+    }
+
+    /** Where every in-scope window is; equal before/after = nothing moved. */
+    _layoutKey(ctx) {
+        return this._windows()
+            .map(w => `${w.get_stable_sequence()}@${locKey(this._describe(w, ctx).loc)}`)
+            .sort()
+            .join(' ');
     }
 
     // ---- actions -------------------------------------------------------------
@@ -573,7 +842,7 @@ export default class MaximizeOwnWorkspace extends Extension {
      * Windows arrived at a place together. If that place now breaks the rule,
      * they move on to a fresh workspace right after it.
      */
-    _arrive({loc, windows}, ctx) {
+    _arrive({loc, windows}, ctx, extra = {}) {
         const group = windows.filter(w => {
             const d = this._describe(w, ctx);
             return d.eligible && !d.userMin && sameLoc(d.loc, loc);
@@ -583,7 +852,7 @@ export default class MaximizeOwnWorkspace extends Extension {
 
         const present = this._members(loc, ctx);
         const residents = present.filter(w => !group.includes(w));
-        if (residents.length === 0 || !present.some(isMax))
+        if (residents.length === 0 || !present.some(holdsPlace))
             return;
 
         const focus = global.display.focus_window;
@@ -597,6 +866,7 @@ export default class MaximizeOwnWorkspace extends Extension {
                 return;
             for (const w of group)
                 w.change_workspace(fresh);
+            this._split?.relocated(group, {kind: 'real', ws: fresh, mon: loc.mon});
             if (follow)
                 fresh.activate_with_focus(focused, global.get_current_time());
             moved = {created};
@@ -606,14 +876,14 @@ export default class MaximizeOwnWorkspace extends Extension {
         }
 
         if (moved && group.length === 1 && isMax(group[0]))
-            group[0][ISOLATION] = {mates: residents, created: moved.created};
+            group[0][ISOLATION] = {mates: residents, created: moved.created, ...extra};
     }
 
     /**
      * A window became maximized/fullscreen (or came back from minimized that
      * way) where other windows are. It stays put; they leave.
      */
-    _isolate(window, ctx) {
+    _isolate(window, ctx, extra = {}) {
         const d = this._describe(window, ctx);
         if (!d.eligible || d.userMin || !d.max || d.loc.kind === 'none')
             return;
@@ -643,7 +913,12 @@ export default class MaximizeOwnWorkspace extends Extension {
             created = moved.created;
         }
 
-        window[ISOLATION] = {mates, created};
+        // A record it already holds (still maximized, split again by a
+        // reconcile) keeps its mates: un-maximizing should find either set.
+        const old = window[ISOLATION];
+        window[ISOLATION] = old
+            ? {...old, mates: [...new Set([...old.mates, ...mates])], created: old.created || created}
+            : {mates, created, ...extra};
     }
 
     /** An isolated window was un-maximized or minimized: rejoin its mates. */
@@ -740,9 +1015,14 @@ export default class MaximizeOwnWorkspace extends Extension {
             counts.set(key, entry);
         }
 
-        const best = [...counts.values()].sort((a, b) => b.n - a.n)[0];
-        if (best && !this._hasMax(best.loc, ctx, window))
+        // Most mates first; a place holding a maximized window of its own is
+        // skipped for the next one (a reconcile's mates can be split up).
+        const best = [...counts.values()].sort((a, b) => b.n - a.n)
+            .find(entry => !this._hasMax(entry.loc, ctx, window));
+        if (best)
             return best.loc;
+        if (iso?.reconciled)
+            return null; // see ISOLATION: never pull in an unrelated workspace
 
         // corgijan's fallback: the closest occupied workspace, lower first.
         const candidates = [];
@@ -858,6 +1138,8 @@ export default class MaximizeOwnWorkspace extends Extension {
             // Dynamic mode can renumber groups after a move; follow the window.
             target = state.indexOf(w);
         }
+        if (target >= 0)
+            this._split?.relocated(windows, virtLoc(loc, target));
 
         if (follow && typeof ctx.ext?._commitSwitch === 'function') {
             ctx.ext._commitSwitch(state, target, {announce: false});

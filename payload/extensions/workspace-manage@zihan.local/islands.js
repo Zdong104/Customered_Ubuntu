@@ -43,6 +43,33 @@
  * wrapped the method last: islands falls through to the method it found for
  * fewer than 2, and this one falls through to the method it found otherwise.
  *
+ * A workspace moved here from another monitor (cross.js) arrives through
+ * MonitorState.track, wrapped so islands files each arriving window straight
+ * into the new group instead of by app rule or active index (land()).
+ *
+ * ## Split View on secondaries (2026-11-09)
+ *
+ * maximize-own-workspace's Split View pairs two windows on a virtual
+ * workspace too. What it needs from islands goes through here, so islands'
+ * private API is touched in one file and gated in one place (splitReady()):
+ *
+ *   change hooks    MonitorState track/untrack/moveWindowTo/switchTo and
+ *                   _notifySizeChanged tell onChanged() listeners (its sweep);
+ *                   a window moved between two parked groups emits no Meta
+ *                   signal at all
+ *   drop targets    islands' (module-private) thumbnail class gets the
+ *                   window-split hover/drop (Strip.splitApi()); and the strip
+ *                   forwards window drags to the thumbnail under the pointer,
+ *                   because DND picks with PickMode.ALL and the active
+ *                   thumbnail is covered by the strip's indicator (without
+ *                   this a window could never be dropped on the visible
+ *                   workspace's thumbnail, split or not)
+ *   moves           moveToGroup(), activateGroup(), land() (cross.js's)
+ *
+ * splitReady() is false (secondaries stay stock) unless islands is the
+ * version this was written against (SPLIT_VERSIONS) and every probed member
+ * is there.
+ *
  * Disabling never resizes anything back. A lock screen disables this and
  * enables it again a moment later; resizing to islands' count and back in
  * between would fold windows together for good.
@@ -65,6 +92,18 @@ const COUNTS_KEY = 'virtual-workspace-counts';
 /** MonitorState.resize() refuses to go below this (monitorState.js MIN_SIZE). */
 const ISLANDS_MIN_SIZE = 2;
 
+/** How long a window moving here with a workspace is waited for (land()). */
+export const LANDING_MS = 5000;
+
+/** Islands versions Split View on secondaries was verified against. */
+const SPLIT_VERSIONS = new Set(['0.1.2']);
+
+/** MonitorState methods after which split listeners hear of a change. */
+const CHANGE_METHODS = ['untrack', 'moveWindowTo', 'switchTo', '_notifySizeChanged'];
+
+/** Delay of the parked-on-primary sweep (_unparkOrphans) after a move. */
+const UNPARK_DELAY_MS = 300;
+
 export class IslandsBridge {
     constructor(injector, settings, log) {
         this._injector = injector;
@@ -72,7 +111,14 @@ export class IslandsBridge {
         this._log = log;
         this._patched = new Set();
         this._counts = {};
+        this._landing = new Map();
+        this._landingId = 0;
         this.ready = false;
+        this.holdUnpark = false;
+        this._listeners = new Set();
+        this._hooked = false;
+        this._splitVersion = false;
+        this._thumbsOk = null; // null: no islands thumbnail seen yet
     }
 
     async enable() {
@@ -109,6 +155,12 @@ export class IslandsBridge {
                 'written against (0.1.2); secondary monitors left alone');
             return;
         }
+        const version = islands.metadata?.['version-name'] ?? null;
+        this._splitVersion = SPLIT_VERSIONS.has(version);
+        if (!this._splitVersion) {
+            console.warn(`workspace-manage: workspace-islands ${version} is not a version ` +
+                'Split View was verified against; split view stays on the primary');
+        }
         this._monitorState = monitorState;
         this._View = workspacesView.VirtualWorkspacesView;
         this._visibility = visibility;
@@ -120,8 +172,17 @@ export class IslandsBridge {
                 this._reconcile();
         }, this);
 
+        // Islands leaves a parked window minimized + HIDDEN-tagged when it
+        // lands on the primary (see _unparkOrphans). Checked after every
+        // monitor move and layout change, deferred past islands' own handlers.
+        global.display.connectObject('window-entered-monitor',
+            () => this._queueUnpark(), this);
+        Main.layoutManager.connectObject('monitors-changed',
+            () => this._queueUnpark(), this);
+
         this.ready = true;
         this._reconcile();
+        this._queueUnpark();
 
         // Enabled with the overview open: its views were built without us.
         const display = Main.overview?._overview?.controls?._workspacesDisplay;
@@ -136,7 +197,15 @@ export class IslandsBridge {
     disable() {
         this._token = null;
         this.ready = false;
+        this._hooked = false;
+        this._listeners.clear();
         Main.extensionManager.disconnectObject(this);
+        global.display.disconnectObject(this);
+        Main.layoutManager.disconnectObject(this);
+        if (this._unparkId)
+            clearTimeout(this._unparkId);
+        this._unparkId = 0;
+        this._clearLanding();
 
         // Views built while we were enabled stay up until the overview closes
         // (they are rebuilt on every entry); take our widgets off them.
@@ -147,6 +216,7 @@ export class IslandsBridge {
             }
             strip[Strip.ADD]?.destroy();
             delete strip[Strip.ADD];
+            Strip.removeDropMarker(strip);
             delete strip._wmAdapter;
             delete strip._wmState;
             delete strip._delegate;
@@ -220,6 +290,42 @@ export class IslandsBridge {
             return undefined;
         });
 
+        // A window arriving with a workspace moved here from another monitor
+        // (cross.js) is filed straight into that workspace's group. Islands
+        // would otherwise adopt it by app rule or the active index, minimizing
+        // it first if that is some other group, and moveWindowTo() would then
+        // play the unminimize to fix it. A window that was parked on its old
+        // monitor is un-parked here if its new group is the one on screen.
+        inj.overrideMethod(this._monitorState.MonitorState.prototype, 'track',
+            original => function (window, index = -1, options = {}) {
+                const landing = self._landing.get(window);
+                const at = landing?.state === this ? this._groups.indexOf(landing.group) : -1;
+                if (at < 0) {
+                    const result = original.call(this, window, index, options);
+                    self._changed();
+                    return result;
+                }
+                self._landing.delete(window);
+                const result = original.call(this, window, at, options);
+                if (this.indexOf(window) === this.activeIndex)
+                    self.reveal(window);
+                self._changed();
+                return result;
+            });
+
+        // Split View's sweep hears of every membership change (see header).
+        const msProto = this._monitorState.MonitorState.prototype;
+        if (CHANGE_METHODS.every(name => typeof msProto[name] === 'function')) {
+            for (const name of CHANGE_METHODS) {
+                inj.overrideMethod(msProto, name, original => function (...args) {
+                    const result = original.apply(this, args);
+                    self._changed();
+                    return result;
+                });
+            }
+            this._hooked = true;
+        }
+
         inj.overrideMethod(this._View.prototype, '_init', original => function (...args) {
             original.call(this, ...args);
             try {
@@ -258,6 +364,51 @@ export class IslandsBridge {
         const self = this;
         const inj = this._injector;
 
+        const thumbnail = strip._thumbnails?.[0];
+        const thumbProto = thumbnail ? Object.getPrototypeOf(thumbnail) : null;
+        if (thumbProto && !this._patched.has(thumbProto)) {
+            this._patched.add(thumbProto);
+            this._thumbsOk = typeof thumbProto.handleDragOver === 'function' &&
+                typeof thumbProto.acceptDrop === 'function' &&
+                Number.isInteger(thumbnail._index) && thumbnail._state === strip._state &&
+                !!thumbnail._contents && !!thumbnail._monitor;
+            if (!this._thumbsOk) {
+                console.warn('workspace-manage: islands thumbnails are not as expected; ' +
+                    'no split view on secondary strips');
+            } else {
+                // A window over an islands thumbnail: Split View's half, or
+                // islands' own move to that virtual workspace.
+                inj.overrideMethod(thumbProto, 'handleDragOver', original => function (source, ...args) {
+                    const window = source?.metaWindow;
+                    const api = window && self.splitReady() ? Strip.splitApi() : null;
+                    if (typeof api?.windowSplitHover === 'function') {
+                        let side = null;
+                        try {
+                            side = api.windowSplitHover(this, window);
+                        } catch (e) {
+                            console.error(`workspace-manage: split hover: ${e}\n${e.stack}`);
+                        }
+                        if (side)
+                            return DND.DragMotionResult.MOVE_DROP;
+                    }
+                    return original.call(this, source, ...args);
+                });
+                inj.overrideMethod(thumbProto, 'acceptDrop', original => function (source, ...args) {
+                    const window = source?.metaWindow;
+                    const api = window && self.splitReady() ? Strip.splitApi() : null;
+                    if (typeof api?.windowSplitDrop === 'function') {
+                        try {
+                            if (api.windowSplitDrop(this, window))
+                                return true;
+                        } catch (e) {
+                            console.error(`workspace-manage: split drop: ${e}\n${e.stack}`);
+                        }
+                    }
+                    return original.call(this, source, ...args);
+                });
+            }
+        }
+
         const stripProto = Object.getPrototypeOf(strip);
         if (!this._patched.has(stripProto)) {
             this._patched.add(stripProto);
@@ -280,16 +431,8 @@ export class IslandsBridge {
                     this.set_allocation(box);
                 }
                 Strip.allocateAddButton(this, this._thumbnails ?? []);
-            });
-        }
-
-        const thumbnail = strip._thumbnails?.[0];
-        const thumbProto = thumbnail && Object.getPrototypeOf(thumbnail);
-        if (thumbProto && !this._patched.has(thumbProto)) {
-            this._patched.add(thumbProto);
-            inj.overrideMethod(thumbProto, 'vfunc_allocate', original => function (box) {
-                original.call(this, box);
-                Strip.allocateCloseButton(this);
+                Strip.allocateCloseButtons(this._thumbnails ?? []);
+                Strip.allocateDropMarker(this);
             });
         }
     }
@@ -315,21 +458,48 @@ export class IslandsBridge {
             activeIndex: () => state.activeIndex,
             commit: (from, to) => this.reorder(state, from, to),
             onDragChanged: () => this._syncStrip(strip),
+            place: {kind: 'virtual', state},
+            canTake: () => this.canResize(state) && state.size < MAX_WORKSPACES,
         };
 
         // Islands' thumbnails are drop targets for windows; the strip around
-        // them takes the reorder drags, which they pass on (no metaWindow).
+        // them takes the reorder drags, which they pass on (no metaWindow),
+        // and workspaces dragged in from another monitor's strip.
+        // A window reaches the strip itself only where DND picked no
+        // thumbnail: the gaps, and the active thumbnail, which the strip's
+        // indicator covers (DND picks non-reactive actors too). The
+        // thumbnail under the pointer gets it, as the shell's ThumbnailsBox
+        // does on the primary.
+        const thumbAt = (x, y) => (strip._thumbnails ?? []).find(t => {
+            const box = t.allocation;
+            return x >= box.x1 && x < box.x2 && y >= box.y1 && y < box.y2;
+        }) ?? null;
         strip._delegate = {
-            handleDragOver(source, _actor, x) {
+            handleDragOver(source, actor, x, y, time) {
+                if (source?.metaWindow) {
+                    const t = thumbAt(x, y);
+                    return t
+                        ? t.handleDragOver(source, actor, x - t.allocation.x1, y - t.allocation.y1, time)
+                        : DND.DragMotionResult.CONTINUE;
+                }
                 if (!Strip.isReorderSource(source))
                     return DND.DragMotionResult.CONTINUE;
                 return Strip.isOurDrag(source, strip)
                     ? Strip.dragOver(x)
-                    : Strip.dragOverOther();
+                    : Strip.dragOverOther(source, strip._wmAdapter, x);
             },
-            acceptDrop(source) {
-                return Strip.isReorderSource(source) &&
-                    Strip.isOurDrag(source, strip) && Strip.drop();
+            acceptDrop(source, actor, x, y, time) {
+                if (source?.metaWindow) {
+                    const t = thumbAt(x, y);
+                    return t
+                        ? t.acceptDrop(source, actor, x - t.allocation.x1, y - t.allocation.y1, time)
+                        : false;
+                }
+                if (!Strip.isReorderSource(source))
+                    return false;
+                return Strip.isOurDrag(source, strip)
+                    ? Strip.drop()
+                    : Strip.dropOther(source, strip._wmAdapter, x);
             },
         };
 
@@ -435,6 +605,226 @@ export class IslandsBridge {
             return {groups: next, map: i => next.indexOf(groups[i])};
         });
         return true;
+    }
+
+    // ---- Split View on secondaries (maximize-own-workspace) ---------------------
+
+    /**
+     * Whether Split View may pair windows on virtual workspaces: islands is
+     * running, a verified version, and every hook and probe is in place.
+     * False means secondaries stay stock.
+     */
+    splitReady() {
+        return this.ready && this._splitVersion && this._hooked && this._thumbsOk !== false &&
+            !!this._ext();
+    }
+
+    /** cb() after every islands membership change. Returns an unsubscribe. */
+    onChanged(cb) {
+        this._listeners.add(cb);
+        return () => this._listeners.delete(cb);
+    }
+
+    _changed() {
+        for (const cb of this._listeners) {
+            try {
+                cb();
+            } catch (e) {
+                console.error(`workspace-manage: islands change listener: ${e}\n${e.stack}`);
+            }
+        }
+    }
+
+    /**
+     * File `window` (on this state's monitor) into `group`, by identity, as
+     * islands' moveWindowTo() would, but with no animation: shown if `group`
+     * is the active one, parked otherwise. Its placement note follows.
+     */
+    moveToGroup(state, window, group) {
+        const to = state._groups.indexOf(group);
+        if (to < 0)
+            return false;
+        const from = state.indexOf(window);
+        if (from === to)
+            return true;
+        if (from >= 0)
+            state._groups[from].delete(window);
+        group.add(window);
+        this._placement.stamp(window, state.connector, to);
+        if (to === state.activeIndex)
+            this.reveal(window);
+        else
+            this._visibility.hide(window, {animate: false});
+        this._changed();
+        try {
+            this._ext()?._afterChange(`workspace-manage: ${state.connector} split moved ` +
+                `"${window.get_title()}" to virtual workspace ${to + 1}`);
+        } catch (e) {
+            console.warn(`workspace-manage: islands _afterChange failed: ${e}`);
+        }
+        return true;
+    }
+
+    /** Make the virtual workspace `group` (by identity) the active one. */
+    activateGroup(state, group) {
+        const index = state._groups.indexOf(group);
+        if (index >= 0)
+            this.activate(state, index);
+        return index >= 0;
+    }
+
+    // ---- a workspace moving between monitors (cross.js) ------------------------
+
+    /** Monitor index of a state's display, or -1 while it is not attached. */
+    monitorOf(state) {
+        return this._monitorState.monitorIndexOf(state.connector);
+    }
+
+    /** Make virtual workspace `index` the active one, without the popup. */
+    activate(state, index) {
+        if (index === state.activeIndex)
+            return;
+        const ext = this._ext();
+        if (ext)
+            ext._commitSwitch(state, index, {announce: false});
+        else
+            state.switchTo(index, {animate: false});
+    }
+
+    /**
+     * Bring `windows` onto this state's monitor into `group`. `moveAll` moves
+     * them there (Meta.Window.move_to_monitor); islands adopts each one as it
+     * enters the monitor, and the track() wrapper files it into `group`.
+     *
+     * Not every window has arrived when moveAll returns: one whose size
+     * changes with the move (a maximized window, for a work area of another
+     * size) changes monitor only once its Wayland client has acknowledged
+     * the new size. Those stay expected for a while (LANDING_MS). One islands
+     * did not adopt at all is filed here.
+     */
+    land(state, group, windows, moveAll) {
+        for (const window of windows)
+            this._landing.set(window, {state, group});
+        try {
+            moveAll();
+        } finally {
+            const monitor = this.monitorOf(state);
+            for (const window of windows) {
+                const at = state._groups.indexOf(group);
+                if (at < 0)
+                    break;
+                const now = state.indexOf(window);
+                if (now === -1 && window.get_monitor() === monitor) {
+                    state.track(window, at, {trustPlacement: false});
+                } else if (now >= 0 && now !== at) {
+                    state._groups[now].delete(window);
+                    group.add(window);
+                    this._placement.stamp(window, state.connector, at);
+                }
+                if (state.indexOf(window) >= 0) {
+                    this._landing.delete(window);
+                    if (state.indexOf(window) === state.activeIndex)
+                        this.reveal(window);
+                }
+            }
+            if (this._landing.size > 0) {
+                if (this._landingId)
+                    clearTimeout(this._landingId);
+                this._landingId = setTimeout(() => {
+                    this._landingId = 0;
+                    this._landing.clear();
+                }, LANDING_MS);
+            }
+        }
+    }
+
+    _clearLanding() {
+        if (this._landingId)
+            clearTimeout(this._landingId);
+        this._landingId = 0;
+        this._landing.clear();
+    }
+
+    _queueUnpark() {
+        if (this._unparkId)
+            return;
+        this._unparkId = setTimeout(() => {
+            this._unparkId = 0;
+            // During an undock undock.js shows them itself, once they have
+            // been moved off the active workspace (unparkNow()).
+            if (this.holdUnpark)
+                return;
+            try {
+                this._unparkOrphans();
+            } catch (e) {
+                console.error(`workspace-manage: unpark sweep: ${e}\n${e.stack}`);
+            }
+        }, UNPARK_DELAY_MS);
+    }
+
+    /**
+     * Show every islands-parked window that now sits on the primary monitor.
+     *
+     * Islands never manages the primary, so a HIDDEN-tagged window there is
+     * minimized for no reason and invisible everywhere (islands' overview
+     * filter drops tagged windows on non-island pages, thumbnails and Alt+Tab
+     * skip minimized ones); only a dock click brings it back. It happens when
+     * a parked window changes monitor: islands' window-left-monitor handler
+     * untracks it (bookkeeping only, no show), so when the monitor it left is
+     * then detached, or becomes the primary, detach()->restoreAll() no longer
+     * finds it, and window-entered-monitor on the primary tracks nothing.
+     * Seen 2026-11-06: "Employment - Google Chrome" parked on DP-4, DP-4
+     * became primary on undock, window stayed [max,min] on a primary
+     * workspace of its own. Islands' placement note is left alone, so its
+     * _reclaim() still works if the monitor comes back.
+     */
+    _unparkOrphans() {
+        if (!this.ready || !this._ext())
+            return;
+        const primary = Main.layoutManager.primaryIndex;
+        const {isHiddenByUs, show} = this._visibility;
+        for (const actor of global.get_window_actors()) {
+            const window = actor.meta_window;
+            if (!window || !isHiddenByUs(window) || window.get_monitor() !== primary)
+                continue;
+            this._log(`unparking "${window.get_title()}": islands-hidden on the primary`);
+            show(window, {animate: false});
+        }
+    }
+
+    /** The parked-on-primary sweep, now (undock.js). */
+    unparkNow() {
+        try {
+            this._unparkOrphans();
+        } catch (e) {
+            console.error(`workspace-manage: unpark sweep: ${e}\n${e.stack}`);
+        }
+    }
+
+    /** Islands' Registry while it is running and bridged, else null. */
+    registry() {
+        return this.ready ? this._ext()?._registry ?? null : null;
+    }
+
+    /** Monitor index a connector drives now, or -1 (islands' own lookup). */
+    monitorIndexOf(connector) {
+        return this._monitorState?.monitorIndexOf(connector) ?? -1;
+    }
+
+    /** Un-park a window islands minimized, the way islands does. */
+    reveal(window) {
+        if (this._visibility.isHiddenByUs(window))
+            this._visibility.show(window, {animate: false});
+    }
+
+    /** Islands' view rebuilds its pages and strip; persist and redraw dots. */
+    changed(state, message) {
+        state._notifySizeChanged();
+        try {
+            this._ext()?._afterChange(`workspace-manage: ${state.connector} ${message}`);
+        } catch (e) {
+            console.warn(`workspace-manage: islands _afterChange failed: ${e}`);
+        }
     }
 
     /**

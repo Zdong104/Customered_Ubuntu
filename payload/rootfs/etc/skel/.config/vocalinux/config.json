@@ -63,7 +63,7 @@
     "auto_capitalize": true,
     "append_trailing_space": true,
     "paste_shortcut": "auto",
-    "backend": "auto",
+    "backend": "ydotool",
     "dictate_to_pad": false
   },
   "history": {

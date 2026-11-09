@@ -1,0 +1,9 @@
+[Unit]
+Description=Add --ozone-platform=x11 to Chrome PWA launchers
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/chrome-pwa-x11-patch
+
+[Install]
+WantedBy=default.target

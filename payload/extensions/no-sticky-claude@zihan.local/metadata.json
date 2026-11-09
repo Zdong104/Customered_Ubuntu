@@ -1,0 +1,6 @@
+{
+  "uuid": "no-sticky-claude@zihan.local",
+  "name": "No Sticky Claude",
+  "description": "Keep the Claude desktop window on one workspace: undo \"Always on Visible Workspace\" whenever the app (or a monitor change) leaves it set.",
+  "shell-version": ["50"]
+}
