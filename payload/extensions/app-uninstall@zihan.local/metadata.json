@@ -1,0 +1,7 @@
+{
+  "uuid": "app-uninstall@zihan.local",
+  "name": "App Uninstall",
+  "description": "Adds \"Uninstall\" to the right-click (or press-and-hold) menu of app icons in the app grid, its folders and the Ubuntu Dock. It works for debs (through PackageKit), snaps, Flatpaks and your own launchers (moved to the Trash). Apps that ship with Ubuntu get no such item. Each removal is simulated first and refused if it would take part of the system with it.",
+  "shell-version": ["50"],
+  "version": 1
+}

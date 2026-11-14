@@ -1,0 +1,6 @@
+{
+  "uuid": "notification-tidy@zihan.local",
+  "name": "Notification tidy",
+  "description": "Clears an app's notifications (and its dock badge) once you have looked at the app, and files Chrome PWA notifications (Teams, Outlook, Google Chat, ...) under the PWA instead of Google Chrome.",
+  "shell-version": ["50"]
+}

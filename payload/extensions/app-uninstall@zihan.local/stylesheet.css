@@ -1,0 +1,4 @@
+.app-uninstall-header { spacing: 12px; }
+.app-uninstall-icon { margin-bottom: 4px; }
+.app-uninstall-busy { spacing: 8px; padding: 8px 0; }
+.app-uninstall-dialog .modal-dialog-button.app-uninstall-destructive { color: #f66151; font-weight: bold; }

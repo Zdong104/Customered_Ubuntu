@@ -71,6 +71,7 @@ def main(conf, root, cache):
     present = {e["name"] for e in entries}
 
     queue = list(wanted)
+    added = []
     while queue:
         name, channel = queue.pop(0)
         if name in present:
@@ -91,6 +92,7 @@ def main(conf, root, cache):
             entry["classic"] = True
         entries.append(entry)
         present.add(name)
+        added.append(name)
         print(f"seeded {name} ({channel}) -> {fname}")
 
     data["snaps"] = entries
@@ -101,6 +103,20 @@ def main(conf, root, cache):
         os.chmod(p, 0o644)
     sh("snap", "debug", "validate-seed", seed_yaml)
     print("seed snaps:", " ".join(sorted(present)))
+
+    # Record what this build added to the stock seed (cumulative, so a rerun on
+    # an already-seeded tree keeps the earlier names). app-uninstall's
+    # classify.py reads it: a stock seed snap is part of Ubuntu and protected,
+    # a snap the image added is a normal app the user may uninstall.
+    rec = os.path.join(root, "var/lib/preload/seed-added-snaps")
+    names = set(added)
+    if os.path.exists(rec):
+        names |= {ln.strip() for ln in open(rec, encoding="utf-8") if ln.strip()}
+    os.makedirs(os.path.dirname(rec), mode=0o755, exist_ok=True)
+    with open(rec, "w", encoding="utf-8") as f:
+        f.write("".join(n + "\n" for n in sorted(names)))
+    os.chmod(rec, 0o644)
+    print("added to the seed:", " ".join(sorted(names)) or "nothing")
 
 
 if __name__ == "__main__":

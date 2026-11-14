@@ -1,0 +1,15 @@
+# app-uninstall@zihan.local: backstop list of apps that never get an
+# "Uninstall" item. It is only a backstop. classify.py computes the real
+# protected set from data (the ubuntu-desktop-minimal / ubuntu-standard /
+# ubuntu-minimal dependency closure, Essential and required/important debs,
+# the installer's snap seed, and base or runtime snaps).
+#
+# One entry per line: a desktop id (org.example.App.desktop), deb:<package>
+# or snap:<name>. Entries are additive only: nothing here can un-protect an
+# app. Each user can add more in
+# ~/.config/app-uninstall/protected-apps.txt (same format).
+
+# "Additional Drivers" and "Software & Updates". Ubuntu 26.04 no longer seeds
+# software-properties-gtk in ubuntu-desktop-minimal, but these apps manage
+# drivers and software sources, so removing them strands a non-technical user.
+deb:software-properties-gtk
