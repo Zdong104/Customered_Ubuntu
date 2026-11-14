@@ -29,34 +29,31 @@ NEED_GB_FIRST=25   # packages, vendor apps, snaps, Miniconda, TinyTeX, Vocalinux
 NEED_GB_AGAIN=5
 
 info() { printf '%s\n' "$*"; }
-fail() { printf '\n错误 / ERROR: %s\n' "$1" >&2; [ -n "${2:-}" ] && printf '%s\n' "$2" >&2; exit 1; }
+fail() { printf '\nERROR: %s\n' "$1" >&2; [ -n "${2:-}" ] && printf '%s\n' "$2" >&2; exit 1; }
 
 preflight() {
-    info "== 检查电脑 / Checking this computer"
+    info "== Checking this computer"
     . /etc/os-release 2>/dev/null || true
     [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 26.04 ] ||
-        fail "只支持 Ubuntu 26.04，这台电脑是 ${PRETTY_NAME:-unknown}。" \
-             "Only Ubuntu 26.04 is supported (this is ${PRETTY_NAME:-unknown})."
+        fail "Only Ubuntu 26.04 is supported (this is ${PRETTY_NAME:-unknown})."
     [ "$(dpkg --print-architecture)" = amd64 ] ||
-        fail "只支持 x86_64 (amd64) 电脑。" "Only x86_64 (amd64) machines are supported."
+        fail "Only x86_64 (amd64) machines are supported."
     dpkg-query -W -f '${Status}' gnome-shell 2>/dev/null | grep -q 'install ok installed' ||
-        fail "需要 Ubuntu 桌面版（GNOME），这台电脑没有安装 GNOME。" \
-             "This needs Ubuntu Desktop (GNOME); gnome-shell is not installed."
+        fail "This needs Ubuntu Desktop (GNOME); gnome-shell is not installed."
     local need=$NEED_GB_FIRST avail
     [ -s "$LIB/state/version" ] && need=$NEED_GB_AGAIN
     avail=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
     [ "$avail" -ge "$need" ] ||
-        fail "磁盘空间不足：需要约 ${need} GB，系统盘只剩 ${avail} GB。" \
-             "Not enough disk space: about ${need} GB needed, ${avail} GB free on /."
+        fail "Not enough disk space: about ${need} GB needed, ${avail} GB free on /."
     if [ -z "${PRELOAD_TEST_REMOTE:-}" ]; then
         wget -q --spider --timeout=20 --tries=2 https://github.com ||
-            fail "连不上 GitHub，请检查网络后重试。" "Cannot reach github.com; check the network and try again."
+            fail "Cannot reach github.com; check the network and try again."
     fi
     local b
     for b in /sys/class/power_supply/*; do
         [ "$(cat "$b/type" 2>/dev/null)" = Battery ] || continue
         if [ "$(cat "$b/status" 2>/dev/null)" = Discharging ] && [ "$(cat "$b/capacity" 2>/dev/null || echo 100)" -lt 30 ]; then
-            info "注意：电量低于 30%，建议接上电源。/ Note: battery below 30%, please plug in."
+            info "Note: battery below 30%, please plug in."
         fi
     done
     info "   Ubuntu 26.04 x86_64 GNOME, ${avail} GB free, network OK"
@@ -88,7 +85,7 @@ reset_desktop() { # for the user who ran sudo only
         info "--reset-desktop: no sudo user / no defaults found, skipped"; return 0
     fi
     uid=$(id -u "$user")
-    info "== 重置 $user 的桌面设置为默认 / Resetting $user's desktop settings to the preload defaults"
+    info "== Resetting $user's desktop settings to the preload defaults"
     awk '/^\[/{gsub(/[][]/,""); s=$0; next} /^[A-Za-z0-9-]+=/{split($0,a,"="); print s, a[1]}' "$ini" |
     while read -r schema key; do
         if [ -S "/run/user/$uid/bus" ]; then
@@ -109,17 +106,16 @@ main() {
             *) fail "unknown option: $a" ;;
         esac
     done
-    [ "$(id -u)" = 0 ] || fail "请在命令前加 sudo 运行。" "Please run it with sudo (see README)."
-    info "Customered_Ubuntu 安装程序 / installer"
+    [ "$(id -u)" = 0 ] || fail "Please run it with sudo (see README)."
+    info "Customered_Ubuntu installer"
     preflight
     info ""
-    info "将安装软件和桌面配置，首次约需 30–60 分钟，需要联网，期间可以继续用电脑。"
     info "Installing apps and desktop settings: about 30-60 minutes the first time, needs network."
     info "If it gets interrupted, just run the same command again: it continues where it stopped."
     info ""
     local t0=$SECONDS
 
-    info "== 准备 / Preparing (git, curl, ssh-keygen)"
+    info "== Preparing (git, curl, ssh-keygen)"
     # stock Desktop lacks git and curl (the engine downloads with curl)
     if ! command -v git >/dev/null || ! command -v curl >/dev/null || ! command -v ssh-keygen >/dev/null; then
         apt-get -o DPkg::Lock::Timeout=900 update -qq
@@ -133,17 +129,17 @@ main() {
     [ -s /etc/preload/preload.conf ] || printf 'REPO_URL=%s\n' "$REPO_URL" > /etc/preload/preload.conf
     if [ -n "${PRELOAD_TEST_SIGNERS:-}" ]; then cp "$PRELOAD_TEST_SIGNERS" /etc/preload/allowed_signers; fi
 
-    info "== 下载并验证签名 / Downloading and verifying the signed release"
+    info "== Downloading and verifying the signed release"
     [ -f "$REPO/HEAD" ] || g init -q --bare
     g config remote.origin.url "${PRELOAD_TEST_REMOTE:-$REPO_URL}"
     g fetch -q --no-tags --prune --force origin '+refs/tags/v*:refs/tags/v*' ||
-        fail "下载失败，请检查网络后重新运行。" "Download failed; check the network and run the command again."
+        fail "Download failed; check the network and run the command again."
     local tag="" t
     while IFS= read -r t; do
         if verified "$t"; then tag=$t; break; fi
-        info "   跳过未通过验证的版本 / skipping unverified tag $t"
+        info "   skipping unverified tag $t"
     done < <(g tag -l 'v*' | grep -E "$TAG_RE" | sort -rV)
-    [ -n "$tag" ] || fail "没有找到签名有效的版本。" "No release with a valid signature was found."
+    [ -n "$tag" ] || fail "No release with a valid signature was found."
     tree=$(mktemp -d /var/tmp/preload-bootstrap.XXXXXX)
     trap 'rm -rf "${tree:-}"' EXIT   # global: the trap runs after main returns
     g archive --format=tar "refs/tags/$tag^{commit}" | tar -x -C "$tree" --no-same-owner
@@ -159,24 +155,22 @@ main() {
     info ""
     info "=================================================================="
     case $rc in
-        0) info "安装完成（用时 ${min} 分钟）/ Installation complete (${min} min)" ;;
-        1) info "安装基本完成（用时 ${min} 分钟），个别项目失败，会在后台自动重试："
-           info "Installed (${min} min); these items failed and will be retried automatically:"
+        0) info "Installation complete (${min} min)" ;;
+        1) info "Installed (${min} min); these items failed and will be retried automatically:"
            info "   $(paste -sd' ' "$LIB/state/failed" 2>/dev/null)" ;;
-        *) info "安装没有完成。请重新运行同一条命令，会从中断处继续。"
-           info "Installation did not finish. Run the same command again to continue."
-           info "日志 / log: /var/log/preload-update.log"
+        *) info "Installation did not finish. Run the same command again to continue."
+           info "log: /var/log/preload-update.log"
            info "=================================================================="
            exit "$rc" ;;
     esac
     info ""
-    info "下一步 / Next:"
-    info "  1. 注销并重新登录一次（右上角菜单 -> 注销）。/ Log out and back in once."
+    info "Next:"
+    info "  1. Log out and back in once (top-right menu -> Log Out)."
     if [ -e /var/run/reboot-required ]; then
-        info "  2. 然后重启一次电脑（安装了驱动或内核参数）。/ Then restart once (drivers / kernel options changed)."
+        info "  2. Then restart once (drivers / kernel options changed)."
     fi
-    info "以后的更新会在后台自动安装，完成后会有通知。/ Future updates install automatically in the background."
-    info "查看状态 / status: preload-update --status"
+    info "Future updates install automatically in the background."
+    info "status: preload-update --status"
     info "=================================================================="
     return "$rc"   # 0 complete; 1 complete except optional items (retried in the background)
 }

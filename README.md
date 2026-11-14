@@ -1,182 +1,167 @@
 # Customered_Ubuntu
 
-一条命令，把一台 **Ubuntu 26.04 桌面版** 装成和我一样顺手的电脑：常用软件、开发工具、中文输入法、
-一套 GNOME 桌面增强扩展和默认设置。之后我每次改进配置，你的电脑会在后台**自动更新**，完成后弹出通知。
-不包含我的任何个人数据。
+One command turns an **Ubuntu 26.04 Desktop** (x86_64, GNOME) into the owner's setup: everyday apps, developer tools,
+Chinese input (fcitx5 Pinyin), a set of GNOME desktop extensions and default settings. After that, whenever the
+owner improves the configuration, your machine **updates itself in the background** and shows a notification when it
+is done. No personal data of the owner is included.
 
-*English summary at the end.*
+## Install
 
-## 安装
+1. Open a terminal (`Ctrl+Alt+T`).
+2. Paste this command, press Enter and type your login password: `wget -qO- https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash`
+3. When it says the installation is complete, log out and back in once (and restart once more if it says a restart is needed).
 
-1. 打开终端（按 `Ctrl+Alt+T`）。
-2. 粘贴这条命令并回车，输入你的开机密码：`wget -qO- https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash`
-3. 显示“安装完成”后，注销并重新登录一次（如果提示需要重启，就再重启一次）。
+The first install takes about 30-60 minutes and needs a network connection; you can keep using the computer meanwhile.
+If it gets interrupted, run the same command again: it continues where it stopped.
+Software that is already installed (Chrome, VS Code, WeChat, Zoom, Miniconda, TinyTeX, snap apps, ...) is reported as
+"already installed, skipped" and not downloaded again.
+If a single download fails (for example a vendor's download URL is temporarily unavailable), the installation does not
+stop: the failed items are listed at the end and retried automatically in the background.
 
-首次安装大约 30–60 分钟，需要联网，期间可以照常用电脑。中途断了也没关系：再运行一次同一条命令，会从中断处继续。
-电脑上已经装好的软件（Chrome、VS Code、微信、Zoom、Miniconda、TinyTeX、snap 应用等）会显示“已安装，跳过”，不会重新下载。
-个别软件下载失败（比如某个厂商的下载地址临时不可用）不会中断安装，结束时会列出来，之后在后台自动重试。
+Optional: end the command with `| sudo bash -s -- --reset-desktop` to immediately reset **your own** desktop
+appearance to the owner's (only the options listed under "Desktop defaults" below). Without this flag, every setting
+you have already changed is kept.
 
-可选：命令末尾换成 `| sudo bash -s -- --reset-desktop`，会把**你自己的**桌面外观立即改成和我一样
-（只重置下面“桌面默认设置”里列出的选项）。不加这个参数时，你已经改过的设置一律保留。
+Before installing, it checks: Ubuntu 26.04, x86_64, GNOME desktop, at least 25 GB free on the system disk, and that
+GitHub is reachable. If any check fails it explains why and changes nothing on the machine. A battery below 30% only
+produces a reminder to plug in.
 
-安装前会先检查：Ubuntu 26.04、x86_64、GNOME 桌面、系统盘至少 25 GB 可用空间、能连上 GitHub；
-任何一项不满足都会用中文说明原因，并且不改动电脑上的任何东西。电量低于 30% 时只会提醒接上电源。
+## What you get
 
-## 你会得到什么
+### Apps
 
-### 应用
-
-| 类别 | 内容 |
+| Category | Contents |
 |---|---|
-| 浏览器 / AI | Google Chrome、Firefox（Mozilla 官方 .deb 版，不是 snap）、Claude 桌面版、ChatGPT 桌面版 |
-| 沟通 | 微信、Zoom、Slack、Discord |
-| 编辑 / 办公 | VS Code、Inkscape、PDF Arranger、img2pdf、Showtime 视频播放器、Remmina 远程桌面 |
-| 3D / 设计 | Blender、FreeCAD（edge 版） |
-| 其它 snap | Cheese 摄像头、iCloud for Linux、nvtop（GPU 监视）、astral-uv、View、LocalSend（局域网互传文件，类似 AirDrop，登录后在托盘后台运行） |
-| 虚拟化 / 容器 | QEMU + libvirt + virt-manager（含 UEFI/OVMF、TPM 模拟 swtpm）、Docker |
-| 媒体 / 驱动 | 常用解码器（ubuntu-restricted-addons）、Intel 硬件视频解码 |
-| 工具 | cc-switch（Claude Code / Codex 配置切换）、tmux、7zip、zstd、剪贴板工具等 |
+| Browsers / AI | Google Chrome, Firefox (Mozilla's official .deb, not the snap), Claude desktop, ChatGPT desktop |
+| Communication | WeChat, Zoom, Slack, Discord |
+| Editing / office | VS Code, Inkscape, PDF Arranger, img2pdf, Showtime video player, Remmina remote desktop |
+| 3D / design | Blender, FreeCAD (edge) |
+| Other snaps | Cheese camera, iCloud for Linux, nvtop (GPU monitor), astral-uv, View, LocalSend (local-network file transfer similar to AirDrop; runs in the tray after login) |
+| Virtualization / containers | QEMU + libvirt + virt-manager (with UEFI/OVMF and swtpm TPM emulation), Docker |
+| Media / drivers | Common codecs (ubuntu-restricted-addons), Intel hardware video decoding |
+| Tools | cc-switch (Claude Code / Codex configuration switcher), tmux, 7zip, zstd, clipboard tools, etc. |
 
-### 开发环境
+### Development environment
 
-- 编译工具链：build-essential、cmake、autotools、pkg-config、git、Node.js + npm、Python 3（pip/venv/dev）、Java（OpenJDK 25）、Vulkan 工具和一批常用开发头文件。
-- 命令行 AI 工具：**Claude Code**、**Codex**（全局 npm，在 `/usr/local`）。
-- **Miniconda**：装在 `/opt/miniconda3`，所有用户可用，默认不自动激活（需要时运行 `conda activate`）；你自己的环境放在 `~/.conda`。
-- **TinyTeX**（含 XeLaTeX，可直接编译中文文档），命令在 `/usr/local/bin`。
-- **uv** 工具 `harbor`。
+- Toolchain: build-essential, cmake, autotools, pkg-config, git, Node.js + npm, Python 3 (pip/venv/dev), Java (OpenJDK 25), Vulkan tools and a set of common development headers.
+- Command-line AI tools: **Claude Code** and **Codex** (global npm, under `/usr/local`).
+- **Miniconda**: installed in `/opt/miniconda3`, available to all users, not auto-activated by default (run `conda activate` when needed); your own environments live in `~/.conda`.
+- **TinyTeX** (including XeLaTeX, so Chinese documents compile out of the box), commands in `/usr/local/bin`.
+- The **uv** tool `harbor`.
 
-### 中文输入
+### Chinese input
 
-- **fcitx5 拼音**（含云拼音），中英文语言包、Noto CJK 和文鼎字体；新老用户登录后都默认使用 fcitx5（`Ctrl+Space` 切换）。
-- 修复了 Wayland 下 Chrome / Claude 桌面版里**候选框位置错乱**的问题：它们改为在 XWayland 下启动（每次软件包升级后会自动重新应用）。
-  Chrome 网页应用（PWA，例如网页版 Outlook / Teams）的启动器也一样，Chrome 每次重新生成它们后会自动改回。
+- **fcitx5 Pinyin** (with cloud Pinyin), Chinese and English language packs, Noto CJK and AR PL (Arphic) fonts; new and existing users both default to fcitx5 after login (`Ctrl+Space` to switch).
+- Fixes the **mispositioned candidate window** in Chrome / Claude desktop under Wayland by launching them under XWayland (re-applied automatically after every package upgrade).
+  Launchers of Chrome web apps (PWAs, e.g. Outlook / Teams on the web) get the same treatment, and are switched back automatically whenever Chrome regenerates them.
 
-### 语音输入：Vocalinux
+### Voice input: Vocalinux
 
-- 本地离线语音转文字（whisper.cpp，支持 Vulkan GPU 加速，没有 GPU 时自动用 CPU），登录后在后台启动；模型在第一次使用时下载。
-- 附带触控板防误触修复：Vocalinux 会接管内置键盘，导致“打字时禁用触控板”失效，这里通过 libinput quirk 修好了。
-- 文字输入方式默认为 `ydotool`（剪贴板粘贴）：默认的 “auto” 方式在 Wayland 下会丢掉中文。已有用户的配置只要还是 “auto”，会在下次登录时自动改过来。
+- Local, offline speech-to-text (whisper.cpp, with Vulkan GPU acceleration and automatic CPU fallback), started in the background after login; the model is downloaded on first use.
+- Includes a touchpad palm-rejection fix: Vocalinux grabs the built-in keyboard, which breaks "disable touchpad while typing"; a libinput quirk repairs it.
+- Text injection defaults to `ydotool` (clipboard paste), because the default "auto" method drops Chinese text under Wayland. An existing user's configuration is switched automatically at the next login as long as it still says "auto".
 
-### GNOME 扩展
+### GNOME extensions
 
-| 扩展 | 作用 |
+| Extension | What it does |
 |---|---|
-| Workspace Manage | 像 macOS 调度中心一样管理工作区：在概览里拖动缩略图排序，“+” 新建，鼠标悬停时缩略图右上角出现 “×” 可删除（窗口移到相邻工作区）；主屏和副屏都支持，工作区缩略图可以在两个屏幕之间拖动。拔掉外接显示器时，副屏上的每个工作区在主屏上各自成为一个工作区，而不是全部挤进当前工作区。 |
-| Maximize to Own Workspace | 最大化或全屏的窗口自动独占一个工作区，取消最大化后合并回去；副屏也支持。**分屏（Split View）**：在概览里把一个窗口拖到全屏工作区缩略图的左半或右半，两个窗口各占一半（主屏和副屏都支持）。 |
-| Workspace Islands | 副屏拥有自己独立的一组工作区（GNOME 自带只在主屏有工作区）。 |
-| Hide Minimized | 最小化的窗口不再出现在概览和 Alt+Tab 里，从 Dock 或 Super+Tab 恢复（点 Dock 图标展开同一应用的所有窗口时，最小化的也会显示）。 |
-| Title Bar Below Top Bar | 窗口的标题栏永远不会被顶栏挡住（Chrome 网页应用在 XWayland 下常见），拖动时只有鼠标越过顶栏才会把窗口带到上方的屏幕。 |
-| No Sticky Claude | Claude 桌面版窗口只停留在一个工作区，不会“在所有工作区显示”。 |
-| Raise Browser | 在微信等应用里点链接时，把 Chrome 带到最前面（Wayland 下默认不会）。 |
-| Thumbnail Wallpaper | 概览顶部的工作区缩略图显示壁纸，而不是一片灰色。 |
-| DND Hides Critical | 开启勿扰模式后，连“紧急”通知横幅也不弹（例如网页版 Teams 的消息），通知仍进入通知列表。 |
-| Cursor Tracker | 通过 D-Bus 提供鼠标位置，供屏幕操作类工具使用。 |
-| 桌面图标（DING）补丁 | 桌面上的文件按空格键可用 Sushi 快速预览；桌面图标只显示在主屏。系统升级后自动重新打补丁。 |
-| Ubuntu 自带 | Dock、平铺助手（Tiling Assistant）、桌面图标等保持启用。 |
+| Workspace Manage | Manage workspaces like macOS Mission Control: drag thumbnails in the overview to reorder, "+" to add one, and a "×" appears at a thumbnail's top-right on hover to delete it (its windows move to the neighbouring workspace); works on the primary and secondary screens, and thumbnails can be dragged between the two. When an external monitor is unplugged, each workspace of the secondary screen becomes its own workspace on the primary screen instead of all being crowded into the current one. |
+| Maximize to Own Workspace | A maximized or full-screen window gets its own workspace and is merged back when un-maximized; works on secondary screens too. **Split View**: in the overview, drag a window onto the left or right half of a full-screen workspace thumbnail and the two windows each take half (primary and secondary screens). |
+| Workspace Islands | The secondary screen gets its own independent set of workspaces (stock GNOME only has workspaces on the primary screen). |
+| Hide Minimized | Minimized windows no longer appear in the overview and Alt+Tab; restore them from the Dock or Super+Tab (they are still shown when clicking a Dock icon expands all windows of that app). |
+| Title Bar Below Top Bar | A window's title bar is never hidden behind the top bar (common with Chrome web apps under XWayland); while dragging, the window only moves to the screen above once the pointer crosses the top bar. |
+| No Sticky Claude | The Claude desktop window stays on a single workspace instead of "showing on all workspaces". |
+| Raise Browser | Brings Chrome to the front when you click a link in WeChat and similar apps (it does not by default under Wayland). |
+| Thumbnail Wallpaper | The workspace thumbnails at the top of the overview show the wallpaper instead of plain gray. |
+| DND Hides Critical | With Do Not Disturb on, even "critical" notification banners (for example web Teams messages) are not shown; notifications still go to the notification list. |
+| Cursor Tracker | Exposes the pointer position over D-Bus for screen-automation tools. |
+| Desktop icons (DING) patches | Press Space on a desktop file for a quick Sushi preview; desktop icons are shown only on the primary screen. The patches are re-applied automatically after system upgrades. |
+| Ubuntu built-ins | Dock, Tiling Assistant, desktop icons, etc. stay enabled. |
 
-每个扩展只会为你自动启用一次：如果你在“扩展”应用里关掉了某一个，它会一直保持关闭。
+Each extension is enabled for you only once: if you switch one off in the Extensions app, it stays off.
 
-### 文件管理器（Files）
+### File manager (Files)
 
-- **最近使用的文件夹**会出现在“最近”里（GNOME 默认只显示文件），可直接打开或往里拖文件。
-- “最近”里的文件会正确显示**缩略图**。
-- 右键菜单 **“Send with LocalSend”**：把选中的文件或文件夹发到附近的设备。
-- 右键菜单 **“Convert to PDF / Combine Images into PDF”**（选中图片时）：用 View 按文件名顺序合成一个 PDF。
-- 默认列表视图、压缩默认 zip、文件选择框显示路径栏、文件夹排在前面。
+- **Recent folders** appear under "Recent" (GNOME only shows files by default); open them directly or drag files into them.
+- Files under "Recent" show correct **thumbnails**.
+- Context menu **"Send with LocalSend"**: sends the selected files or folders to nearby devices.
+- Context menu **"Convert to PDF / Combine Images into PDF"** (when images are selected): combines them into one PDF in file-name order using View.
+- Defaults: list view, zip as the default compression format, path bar in file chooser dialogs, folders sorted first.
 
-### 桌面默认设置
+### Desktop defaults
 
-这些只是**默认值**：你自己改过的设置永远优先，自动更新也不会覆盖。
+These are only **defaults**: settings you change yourself always win, and automatic updates never overwrite them.
 
-- 深色模式（Yaru-dark），显示电池百分比，热角开启，壁纸“Twin brothers”。
-- 固定 1 个工作区（可用 Workspace Manage 增加），工作区只在主屏切换；Alt+Tab 显示所有工作区的窗口。
-- Dock 图标大小 42，收藏：文件、Chrome、VS Code、Claude、设置、微信、应用中心、终端、文本编辑器、View。
-- 平铺助手：橙色焦点提示，平铺弹窗显示所有工作区窗口。
-- 触控板轻点即点击、双指滚动、打字时禁用 1.5 秒；鼠标/触控板速度略快。
-- 电源：不自动熄屏、不变暗、插电和用电池时都不自动休眠；低电量时不强制省电模式。
-- 护眼提醒：每 30 分钟提醒活动 5 分钟。夜灯色温 3330K（是否开启由你决定）。
-- 不自动发送错误报告。
+- Dark mode (Yaru-dark), battery percentage shown, hot corner on, wallpaper "Twin brothers".
+- A fixed single workspace (add more with Workspace Manage), workspaces switch on the primary screen only; Alt+Tab shows windows from all workspaces.
+- Dock icon size 42; favorites: Files, Chrome, VS Code, Claude, Settings, WeChat, App Center, Terminal, Text Editor, View.
+- Tiling Assistant: orange focus hint, and the tiling popup shows windows from all workspaces.
+- Tap to click, two-finger scrolling, touchpad disabled for 1.5 s while typing; slightly faster mouse/touchpad speed.
+- Power: no automatic screen blanking, dimming or suspend, on AC or battery; power-saver mode is not forced at low battery.
+- Eye-care reminder: a 5-minute break reminder every 30 minutes. Night Light color temperature 3330K (whether it is on is up to you).
+- Error reports are not sent automatically.
 
-### 硬件
+### Hardware
 
-- **NVIDIA 显卡**：如果还没有装驱动，自动安装 Ubuntu 推荐的驱动（已有驱动则不碰）。
-- **ThinkPad P1 Gen 8**（按机型识别，其他电脑不受影响）：修复内屏黑屏/闪烁（关闭 PSR、自动重新点亮面板，`Super+Shift+D` 手动修复）、雷电 5 外接显示器、NVIDIA PRIME 按需模式、PipeWire 音频崩溃后自动重启。
+- **NVIDIA GPUs**: if no driver is installed yet, the driver Ubuntu recommends is installed automatically (an existing driver is left alone).
+- **ThinkPad P1 Gen 8** (detected by model; other computers are unaffected): fixes for the internal display going black or flickering (PSR disabled, panel automatically re-lit, `Super+Shift+D` for a manual fix), Thunderbolt 5 external displays, NVIDIA PRIME on-demand mode, and automatic restart of PipeWire audio after a crash.
 
-### 死机自救
+### Freeze recovery
 
-开启 Magic SysRq（`kernel.sysrq = 240`）：桌面完全卡死时，按住 `Alt+PrtSc` 依次按 `E I S U B` 可以安全重启（结束程序、同步磁盘、只读挂载、重启），
-不用长按电源键。
+Magic SysRq is enabled (`kernel.sysrq = 240`): when the desktop is completely frozen, hold `Alt+PrtSc` and press `E I S U B` in turn to reboot safely (terminate processes, sync disks, remount read-only, reboot) without holding the power button.
 
-### 用户组
+### Groups
 
-为了让语音输入和虚拟化开箱即用，所有用户加入 `input` 组；管理员（sudo 组）另外加入 `adm kvm libvirt docker`。
-注意：`docker` 组等同于 root 权限，`input` 组可以读取键盘输入。
+To make voice input and virtualization work out of the box, all users join the `input` group; administrators (sudo group) additionally join `adm kvm libvirt docker`.
+Note: the `docker` group is equivalent to root, and the `input` group can read keyboard input.
 
-## 自动更新
+## Automatic updates
 
-- 每次开机 15 分钟后和每天一次（随机延后最多 2 小时）在后台检查；用电池且电量低于 30%，或连接的是计费网络（手机热点）时跳过。
-- 以低优先级运行（内存上限 4 GB），不影响正常使用；只安装缺少的或有改动的部分，已装好的不会重装，一般几秒到几分钟。
-- 更新了 GNOME 扩展或桌面设置时，通知会提示“注销并重新登录后生效”（Wayland 下扩展只在登录时加载）。
-- 完成后弹出通知“桌面配置已更新到 vX”；失败的项目会在之后自动重试。
-- 只会**新增或更新**东西：软件包不会被自动卸载（除非明确列在 `payload/remove.txt`），
-  我不再提供的配置文件会被删除，如果原来你电脑上就有同名文件，会恢复成你原来的版本。
-- 系统本身的升级（内核、软件包）仍然由 Ubuntu 自己的“软件更新器”负责。
+- A background check runs 15 minutes after every boot and once a day (randomly delayed by up to 2 hours); it is skipped on battery below 30% or on a metered connection (phone hotspot).
+- It runs at low priority (4 GB memory cap) without disturbing normal use, and only installs what is missing or changed, so already installed items are not reinstalled; typically a few seconds to a few minutes.
+- If GNOME extensions or desktop settings changed, the notification asks you to log out and back in for them to take effect (under Wayland, extensions are loaded only at login).
+- When finished it shows a notification such as "Desktop configuration updated to vX"; failed items are retried automatically later.
+- It only **adds or updates** things: packages are never removed automatically (unless explicitly listed in `payload/remove.txt`);
+  configuration files the owner no longer ships are deleted, and if a file of the same name existed on your machine before, your original version is restored.
+- System upgrades themselves (kernel, packages) remain the job of Ubuntu's own Software Updater.
 
-常用命令：
-
-```
-preload-update --status          # 当前版本、上次更新结果、下次检查时间
-sudo preload-update --now        # 立即检查并更新
-sudo preload-update --check      # 只检查有没有新版本
-preload-update --rollback-info   # 更新历史，以及如何撤销
-```
-
-### 安全性
-
-自动更新以 root 身份执行仓库里的代码，所以只接受经过我的**签名密钥**签名的发布：
-
-- 只接受名为 `vYYYY.MM.DD[.N]` 的带注释标签，用 `git verify-tag` 按 SSH 签名验证，公钥在安装时固定在
-  `/etc/preload/allowed_signers`（也写在 `bootstrap.sh` 里）。分支、未签名或别人签名的提交一律不执行。
-- 标签对象里签名过的名字必须和标签名一致，旧的签名标签无法换个新名字重放；版本号只升不降。
-- 每次都从标签对应提交的干净副本（`git archive`）执行，只通过 HTTPS 下载。
-- 换密钥的方式：用旧密钥签名一个包含新公钥的发布。
-
-也就是说，即使 GitHub 仓库被别人改动，只要签名私钥没有泄露，你的电脑就不会执行它。
-
-## 不包含什么
-
-不含我的任何个人数据：没有文档、浏览器资料、聊天记录、密钥/SSH/GPG、Wi-Fi 密码、打印机、虚拟机或容器镜像、
-conda 环境、各种 token 和 AI 工具的登录状态，也不会创建任何账户或改你的主机名。发布前会自动做一次泄露扫描。
-
-## 停止更新 / 卸载
+Useful commands:
 
 ```
-sudo preload-update --disable      # 停止自动更新（已安装的内容都保留）
-sudo systemctl enable --now preload-update.timer   # 重新开启
-sudo preload-update --uninstall    # 移除更新程序本身（已安装的软件和设置保留）
+preload-update --status          # current version, last update result, next check time
+sudo preload-update --now        # check and update right now
+sudo preload-update --check      # only check whether a new release exists
+preload-update --rollback-info   # update history, and how to undo
 ```
 
-已安装的软件可以像平常一样用“应用中心”、`sudo apt remove` 或 `sudo snap remove` 卸载；扩展可在“扩展”应用里关闭；
-桌面默认值可以删掉 `/usr/share/glib-2.0/schemas/90_preload.gschema.override` 后运行
-`sudo glib-compile-schemas /usr/share/glib-2.0/schemas` 恢复 Ubuntu 原样。
+### Security
 
-## English summary
+The updater runs code from the repository as root, so it accepts only releases signed with the owner's **signing key**:
 
-One command turns an Ubuntu 26.04 Desktop (x86_64, GNOME) into the owner's setup, then keeps it updated
-silently in the background:
+- Only annotated tags named `vYYYY.MM.DD[.N]` are accepted, verified with `git verify-tag` against an SSH signature; the public key is pinned at install time in
+  `/etc/preload/allowed_signers` (and also embedded in `bootstrap.sh`). Branches and unsigned or third-party-signed commits are never executed.
+- The signed name inside the tag object must match the tag name, so an old signed tag cannot be replayed under a new name; versions only go up, never down.
+- Every run executes a clean copy (`git archive`) of the tagged commit, downloaded over HTTPS only.
+- To rotate the key: sign a release that contains the new public key with the old key.
+
+In other words, even if the GitHub repository is tampered with, your machine will not run the change unless the private signing key has leaked. See `preload-update --status`.
+
+## What is not included
+
+No personal data of the owner: no documents, browser profiles, chat history, keys/SSH/GPG, Wi-Fi passwords, printers, virtual machine or container images,
+conda environments, tokens or AI-tool logins, and no account is created and your hostname is not changed. A leak scan runs automatically before every release.
+
+## Stopping updates / uninstalling
 
 ```
-wget -qO- https://raw.githubusercontent.com/Zdong104/Customered_Ubuntu/main/bootstrap.sh | sudo bash
+sudo preload-update --disable      # stop automatic updates (everything installed is kept)
+sudo systemctl enable --now preload-update.timer   # turn them back on
+sudo preload-update --uninstall    # remove the updater itself (installed software and settings are kept)
 ```
 
-It checks the machine first (and changes nothing if a check fails), takes about 30-60 minutes, can be
-re-run to resume, and keeps going if a single optional download fails. Log out and back in once when it
-finishes. It installs the apps, developer toolchains, Chinese input, Vocalinux voice typing, the GNOME
-extensions (workspace management, Split View, title bars kept below the top bar, ...), LocalSend with a
-"Send with LocalSend" Files menu item, View's "Combine Images into PDF" menu item, Magic SysRq and the
-desktop defaults listed above. Updates come only from SSH-signed release tags verified against
-a pinned key (no branches, no downgrades, no replayed tags, https only); see `preload-update --status`.
-Your own settings always win over the defaults. No personal data of the owner is included.
+Installed software can be removed as usual with App Center, `sudo apt remove` or `sudo snap remove`; extensions can be switched off in the Extensions app;
+to restore stock Ubuntu desktop defaults, delete `/usr/share/glib-2.0/schemas/90_preload.gschema.override` and run
+`sudo glib-compile-schemas /usr/share/glib-2.0/schemas`.
 
 ## For the owner: releasing
 

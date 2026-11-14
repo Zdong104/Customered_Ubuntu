@@ -100,7 +100,7 @@ backup_once() { # path-relative-to-/ [file-we-will-install]
 }
 
 pkg_installed() { dpkg-query -W -f '${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
-skipped() { progress "      $1: 已安装，跳过 / already installed, skipped"; }
+skipped() { progress "      $1: already installed, skipped"; }
 
 # Items (a vendor .deb, a snap, Vocalinux at a tag, ...) that are already on the
 # machine are adopted, not reinstalled: an item is skipped when it is present
@@ -661,22 +661,22 @@ step_cleanup() {
 # --- step metadata ------------------------------------------------------------
 step_title() {
     case $1 in
-        updater)    echo "安装自动更新服务 / auto-updater" ;;
-        base)       echo "安装系统软件包：开发工具、中文输入法、字体、虚拟化 / Ubuntu packages" ;;
-        repos)      echo "安装 Chrome / VS Code / Firefox / Claude / ChatGPT" ;;
-        debs)       echo "安装 微信 / Zoom / cc-switch" ;;
-        npm)        echo "安装 Claude Code / Codex 命令行 / CLIs" ;;
-        miniconda)  echo "安装 Miniconda" ;;
-        tinytex)    echo "安装 TinyTeX (LaTeX)" ;;
-        uvtool)     echo "安装 uv 工具 / uv tools (harbor)" ;;
-        vocalinux)  echo "安装 Vocalinux 语音输入（需编译，较慢）/ voice input (compiles, slow)" ;;
-        snaps)      echo "安装 Snap 应用：Blender、Slack、Discord、LocalSend ... / snaps" ;;
-        extensions) echo "安装 GNOME 扩展 / GNOME extensions" ;;
-        dconf)      echo "应用桌面默认设置 / desktop defaults" ;;
-        files)      echo "安装系统文件与配置 / system files" ;;
-        services)   echo "启用服务 / services" ;;
-        hw)         echo "硬件检测：NVIDIA 驱动、ThinkPad P1 Gen 8 / hardware" ;;
-        remove)     echo "移除已弃用的软件包 / retired packages" ;;
+        updater)    echo "Install auto-updater" ;;
+        base)       echo "Install Ubuntu packages: dev tools, input methods, fonts, virtualization" ;;
+        repos)      echo "Install Chrome / VS Code / Firefox / Claude / ChatGPT" ;;
+        debs)       echo "Install WeChat / Zoom / cc-switch" ;;
+        npm)        echo "Install Claude Code / Codex CLIs" ;;
+        miniconda)  echo "Install Miniconda" ;;
+        tinytex)    echo "Install TinyTeX (LaTeX)" ;;
+        uvtool)     echo "Install uv tools (harbor)" ;;
+        vocalinux)  echo "Install Vocalinux voice input (compiles, slow)" ;;
+        snaps)      echo "Install snaps: Blender, Slack, Discord, LocalSend ..." ;;
+        extensions) echo "Install GNOME extensions" ;;
+        dconf)      echo "Apply desktop defaults" ;;
+        files)      echo "Install system files and configuration" ;;
+        services)   echo "Enable services" ;;
+        hw)         echo "Hardware detection: NVIDIA driver, ThinkPad P1 Gen 8" ;;
+        remove)     echo "Remove retired packages" ;;
         *)          echo "$1" ;;
     esac
 }
@@ -776,13 +776,13 @@ for s in "${due[@]}"; do
         echo "$h" > "$STATE/steps/$s"
         el=$((SECONDS - t0))
         if [ $el -lt 120 ]; then el="${el} s"; else el="$((el / 60)) min"; fi
-        progress "      完成 / done ($el)"
+        progress "      done ($el)"
         ran+=("$s")
     else
         rm -f "$STATE/steps/$s"
         failed+=("$s")
         [[ $CORE == *" $s "* ]] && core_failed=1
-        progress "      失败 / FAILED: $s (exit $rc)"
+        progress "      FAILED: $s (exit $rc)"
     fi
 done
 if live; then

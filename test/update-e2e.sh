@@ -135,11 +135,11 @@ check "service ran (Result=exit-code 1 = partial, debs)" inc '[ "$(systemctl sho
 check "applied version v2026.11.10" inc 'grep -qx v2026.11.10 /var/lib/preload/state/version'
 ran=$(inc "grep -oE '\[provision\] \[[0-9]+/[0-9]+\] .*' /var/log/preload-update.log" || true)
 echo "$ran" | sed 's/^/   | /'
-[ "$(grep -c . <<< "$ran")" = 4 ] && grep -q '\[1/4\] .*微信' <<< "$ran" && grep -q 'GNOME' <<< "$ran" &&
+[ "$(grep -c . <<< "$ran")" = 4 ] && grep -q '\[1/4\] .*WeChat' <<< "$ran" && grep -q 'GNOME' <<< "$ran" &&
     grep -q 'desktop defaults' <<< "$ran" && grep -q 'system files' <<< "$ran" &&
     ok "re-ran exactly: debs (retry), extensions, dconf, files" || bad "unexpected set of steps re-ran"
 check "unchanged steps skipped" inc 'grep -q "unchanged: updater" /var/log/preload-update.log && grep -q "unchanged: services" /var/log/preload-update.log && grep -q "unchanged: hw" /var/log/preload-update.log'
-check "workspace-islands not re-fetched for an extension change" inc 'grep -q "islands: 已安装，跳过" /var/log/preload-update.log && ! grep -q "Cloning into" /var/log/preload-update.log'
+check "workspace-islands not re-fetched for an extension change" inc 'grep -q "islands: already installed, skipped" /var/log/preload-update.log && ! grep -q "Cloning into" /var/log/preload-update.log'
 check "extension file updated" inc 'tail -1 /usr/share/gnome-shell/extensions/hide-minimized@zihan.local/extension.js | grep -q "e2e change"'
 check "dock icon default now 48" inc '[ "$(GSETTINGS_BACKEND=memory gsettings get org.gnome.shell.extensions.dash-to-dock dash-max-icon-size)" = 48 ]'
 check "dropped file removed" inc '! test -e /usr/share/applications/vocalinux.desktop'
@@ -169,7 +169,7 @@ t0=$SECONDS
 out=$(inc "PRELOAD_TEST_REMOTE=file:///t/remote.git PRELOAD_SKIP_STEPS='base repos snaps' preload-update --now" 2>&1 || true)
 dt=$((SECONDS - t0)); echo "$out" | sed 's/^/   | /'
 for k in npm miniconda tinytex uvtool vocalinux islands; do
-    grep -q "$k: 已安装，跳过 / already installed, skipped" <<< "$out" && ok "$k adopted (already installed, skipped)" || bad "$k not skipped"
+    grep -q "$k: already installed, skipped" <<< "$out" && ok "$k adopted (already installed, skipped)" || bad "$k not skipped"
 done
 [ $dt -lt 120 ] && ok "full first-install run on a populated machine took ${dt}s" || bad "populated full run took ${dt}s"
 check "nothing was downloaded for adopted items" inc '! grep -qE "Cloning into|Downloading|npm (warn|notice)" /var/log/preload-update.log'

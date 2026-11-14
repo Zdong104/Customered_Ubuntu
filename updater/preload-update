@@ -38,7 +38,7 @@ say() {
     printf '%s\n' "$*"
     printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null || true
 }
-die() { say "错误 / ERROR: $*" >&2; exit "${2:-3}"; }
+die() { say "ERROR: $*" >&2; exit "${2:-3}"; }
 
 repo_url() {
     # Tests point PRELOAD_TEST_REMOTE at a local repository; real use is https.
@@ -89,7 +89,7 @@ newest_verified() {
     while IFS= read -r t; do
         ver_gt "$t" "$applied" || break
         if why=$(verify_tag "$t"); then echo "$t"; return 0; fi
-        say "拒绝 / refused $t: $why" >&2
+        say "refused $t: $why" >&2
     done < <(g tag -l 'v*' | grep -E "$TAG_RE" | sort -rV)
     return 0
 }
@@ -111,7 +111,7 @@ extract() {
 # go to our stdout (terminal or journal), everything to the log file.
 apply_tree() { # tag dir
     local rc=0
-    say "应用 / applying $1 ($(cat "$REL/$1.commit" 2>/dev/null || echo '?'))"
+    say "applying $1 ($(cat "$REL/$1.commit" 2>/dev/null || echo '?'))"
     PRELOAD_MODE=live PRELOAD_PAYLOAD="$2/payload" PRELOAD_STATE="$STATE" PRELOAD_VERSION="$1" \
         PRELOAD_PROGRESS_FD=3 bash "$2/payload/provision.sh" --changed 3>&1 >>"$LOG" 2>&1 || rc=$?
     return $rc
@@ -150,7 +150,7 @@ notify_users() { # urgency title body
             n=$((n + 1))
         fi
     done
-    say "通知 / notified $n graphical session(s)"
+    say "notified $n graphical session(s)"
 }
 
 # Logged-in users pick up new skel files / extensions now, not at next login.
@@ -193,17 +193,17 @@ take_lock() { # wait|nowait
     install -d -m 0755 "$(dirname "$LOCK")"
     exec 9>"$LOCK"
     if [ "$1" = nowait ]; then
-        flock -n 9 || { say "另一个更新正在运行 / another preload-update is running"; exit 0; }
+        flock -n 9 || { say "another preload-update is running"; exit 0; }
     else
-        flock -n 9 || { say "等待正在运行的更新 / waiting for a running update ..."; flock -w 7200 9 || die "lock timeout"; }
+        flock -n 9 || { say "waiting for a running update ..."; flock -w 7200 9 || die "lock timeout"; }
     fi
 }
 
 update() { # now|timer
     local mode=$1 applied target d rc=0 failed
-    say "检查更新 / checking $(repo_url)"
+    say "checking $(repo_url)"
     if ! fetch >>"$LOG" 2>&1; then
-        [ "$mode" = now ] && die "无法连接更新服务器 / cannot fetch releases (network?)"
+        [ "$mode" = now ] && die "cannot fetch releases (network?)"
         say "fetch failed; will try again later"; return 0
     fi
     applied=$(applied_version)
@@ -212,36 +212,36 @@ update() { # now|timer
         if [ -s "$STATE/failed" ] && [ -d "$LIB/current" ]; then
             # background retries of a failing step at most about once a day
             if [ "$mode" = timer ] && [ $(( $(date +%s) - $(stat -c %Y "$STATE/failed") )) -lt 72000 ]; then
-                say "已是最新 / up to date ($applied); failed steps retry later: $(paste -sd' ' "$STATE/failed")"
+                say "up to date ($applied); failed steps retry later: $(paste -sd' ' "$STATE/failed")"
                 return 0
             fi
-            say "重试失败的步骤 / retrying failed steps of $applied: $(paste -sd' ' "$STATE/failed")"
+            say "retrying failed steps of $applied: $(paste -sd' ' "$STATE/failed")"
             apply_tree "$applied" "$(readlink -f "$LIB/current")" || rc=$?
             record "$applied" "$rc"
-            [ "$rc" = 0 ] && notify_users low "桌面配置已更新到 $applied" "Desktop configuration updated to $applied."
+            [ "$rc" = 0 ] && notify_users low "Desktop configuration updated" "Desktop configuration updated to $applied."
             summary "$applied" "$rc"
             return "$rc"
         fi
-        say "已是最新 / up to date ($applied)"
+        say "up to date ($applied)"
         return 0
     fi
-    say "新版本 / new release: $target (now $applied)"
+    say "new release: $target (now $applied)"
     extract "$target"
     apply_tree "$target" "$REL/$target" || rc=$?
     record "$target" "$rc"
     failed=$(paste -sd' ' "$STATE/failed" 2>/dev/null || true)
     local reboot="" relogin=""
-    [ -e /var/run/reboot-required ] && reboot=" 需要重启 / Restart required."
+    [ -e /var/run/reboot-required ] && reboot=" Restart required."
     # GNOME Shell on Wayland loads extension code and new defaults only at login
     if grep -qxE 'extensions|dconf' "$STATE/ran" 2>/dev/null; then
-        relogin=" 桌面扩展/设置已更新，注销并重新登录后生效 / Desktop extensions or settings changed: log out and back in to apply."
+        relogin=" Desktop extensions or settings changed: log out and back in to apply."
     fi
     case $rc in
-        0) notify_users normal "桌面配置已更新到 $target" \
+        0) notify_users normal "Desktop configuration updated" \
                "Desktop configuration updated to $target.$relogin$reboot" ;;
-        1) notify_users normal "桌面配置已更新到 $target（部分项目失败）" \
-               "Updated to $target; these will be retried automatically / 将自动重试: $failed.$relogin$reboot" ;;
-        *) notify_users critical "桌面配置更新失败 / Desktop update failed" \
+        1) notify_users normal "Desktop configuration partly updated" \
+               "Updated to $target; these will be retried automatically: $failed.$relogin$reboot" ;;
+        *) notify_users critical "Desktop update failed" \
                "$target could not be applied ($failed); it will be retried. Details: sudo preload-update --status" ;;
     esac
     sync_users
@@ -253,36 +253,36 @@ summary() { # version rc
     local failed
     failed=$(paste -sd' ' "$STATE/failed" 2>/dev/null || true)
     case $2 in
-        0) say "完成 / done: $1"
+        0) say "done: $1"
            if grep -qxE 'extensions|dconf' "$STATE/ran" 2>/dev/null; then
-               say "注销并重新登录后，新的桌面扩展/设置才会生效 / log out and back in for the desktop changes"
+               say "log out and back in for the desktop changes"
            fi ;;
-        1) say "完成，但以下项目失败（会在后台自动重试）/ done, but these failed and will be retried: $failed" ;;
-        *) say "失败 / FAILED: $1 not applied (core step failed: $failed). Log: $LOG" ;;
+        1) say "done, but these failed and will be retried: $failed" ;;
+        *) say "FAILED: $1 not applied (core step failed: $failed). Log: $LOG" ;;
     esac
 }
 
 status() {
     local v
     v=$(applied_version)
-    echo "当前版本 / applied release : $v $(cat "$REL/$v.commit" 2>/dev/null || true)"
-    echo "更新源 / source            : $(repo_url 2>/dev/null || echo '?')"
+    echo "applied release   : $v $(cat "$REL/$v.commit" 2>/dev/null || true)"
+    echo "source            : $(repo_url 2>/dev/null || echo '?')"
     if [ -s "$STATE/failed" ]; then
-        echo "待重试 / failed steps      : $(paste -sd' ' "$STATE/failed")"
+        echo "failed steps      : $(paste -sd' ' "$STATE/failed")"
     fi
-    echo "上次运行 / last run         : $(tail -n 1 "$STATE/history" 2>/dev/null || echo never)"
-    echo "自动更新 / timer            : $(systemctl is-enabled preload-update.timer 2>/dev/null || echo unknown)," \
+    echo "last run          : $(tail -n 1 "$STATE/history" 2>/dev/null || echo never)"
+    echo "timer             : $(systemctl is-enabled preload-update.timer 2>/dev/null || echo unknown)," \
          "next: $(systemctl show preload-update.timer -p NextElapseUSecRealtime --value 2>/dev/null || echo '?')"
-    echo "日志 / log                  : $LOG  (journalctl -u preload-update)"
-    [ -e /var/run/reboot-required ] && echo "需要重启 / restart required"
+    echo "log               : $LOG  (journalctl -u preload-update)"
+    [ -e /var/run/reboot-required ] && echo "restart required"
     return 0
 }
 
 rollback_info() {
-    echo "当前版本 / applied: $(applied_version)"
-    echo "历史 / history ($STATE/history):"
+    echo "applied: $(applied_version)"
+    echo "history ($STATE/history):"
     tail -n 20 "$STATE/history" 2>/dev/null | sed 's/^/  /' || echo "  (none)"
-    echo "保留的版本 / kept release trees: $(ls -1 "$REL" 2>/dev/null | grep -E "$TAG_RE" | paste -sd' ')"
+    echo "kept release trees: $(ls -1 "$REL" 2>/dev/null | grep -E "$TAG_RE" | paste -sd' ')"
     cat <<'EOF'
 
 Updates never go backwards by themselves (a downgrade would let an old,
@@ -306,7 +306,7 @@ uninstall() {
     rm -rf /etc/preload "$REPO" "$REL" "$LIB/current"
     systemctl daemon-reload || true
     rm -f /usr/local/sbin/preload-update
-    echo "自动更新已移除 / updater removed. Installed apps and settings were kept; state is in $STATE."
+    echo "updater removed. Installed apps and settings were kept; state is in $STATE."
 }
 
 usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -318,14 +318,14 @@ main() {
         --rollback-info) rollback_info; return ;;
         -h|--help) usage; return ;;
     esac
-    [ "$(id -u)" = 0 ] || die "请用 sudo 运行 / run as root: sudo preload-update $cmd" 2
+    [ "$(id -u)" = 0 ] || die "run as root: sudo preload-update $cmd" 2
     case $cmd in
         --check)
             take_lock wait
             fetch >>"$LOG" 2>&1 || die "cannot fetch releases"
             local a t
             a=$(applied_version); t=$(newest_verified "$a")
-            if [ -n "$t" ]; then say "可更新 / update available: $a -> $t"; else say "已是最新 / up to date ($a)"; fi ;;
+            if [ -n "$t" ]; then say "update available: $a -> $t"; else say "up to date ($a)"; fi ;;
         --now)
             run_capped "$@"
             take_lock wait
@@ -337,7 +337,7 @@ main() {
             update timer ;;
         --disable)
             systemctl disable --now preload-update.timer
-            say "自动更新已关闭 / automatic updates disabled (re-enable: sudo systemctl enable --now preload-update.timer)" ;;
+            say "automatic updates disabled (re-enable: sudo systemctl enable --now preload-update.timer)" ;;
         --uninstall) uninstall ;;
         *) usage; return 2 ;;
     esac

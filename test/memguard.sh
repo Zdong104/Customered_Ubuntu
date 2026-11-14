@@ -34,7 +34,7 @@ while sleep 2; do
     if [ "$avail" -lt "$MIN_AVAIL_GB" ] || over "$sp" "$MAX_PSI" || over "$up" "$MAX_PSI"; then
         msg="memguard TRIPPED: avail=${avail}G psi_sys=$sp psi_user=$up"
         { echo "$(date '+%F %T') $msg"; stop_tests; } >> "$LOG" 2>&1
-        notify-send -u critical "测试已紧急停止 / Test stopped" "$msg" 2>/dev/null
+        notify-send -u critical "Test stopped" "$msg" 2>/dev/null
         exit 1
     fi
 done
