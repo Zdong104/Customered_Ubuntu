@@ -30,6 +30,10 @@ export function makeTz(localId = null) {
         if (!local || local.includes('/etc/') || !get(local))
             local = 'UTC';
     }
+    // Etc/UTC and friends are UTC itself: one id, so "3pm PST" does not list
+    // the same time twice as "local (UTC)" and "UTC".
+    if (/^(Etc\/)?(UTC|UCT|Universal|Zulu)$/.test(local))
+        local = 'UTC';
     return {
         local,
         offset(id, utcMs) {
