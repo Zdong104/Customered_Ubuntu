@@ -104,7 +104,10 @@
 }
 
 .ep-emoji {
-  font-family: emoji, "Noto Color Emoji", sans-serif;  /* fontconfig emoji alias */
+  /* fontconfig's emoji alias. One family only: St rejects a comma-separated
+     list here ("Couldn't parse family in font property", once per cell) and
+     then ignores the declaration altogether. */
+  font-family: emoji;
   font-size: 24px;
 }
 
