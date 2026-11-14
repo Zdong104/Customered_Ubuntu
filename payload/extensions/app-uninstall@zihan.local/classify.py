@@ -462,6 +462,16 @@ def classify():
                     rec['reason'] = 'Steam game shortcut'
         else:
             rec.update(by_system_file(did, p, d, entry))
+            # A system-wide launcher override (preload's reapply.sh writes some to
+            # /usr/local/share/applications, e.g. Chrome and WeChat) shadows the
+            # package's own entry: the app is still that package's. reapply.sh
+            # drops the override once the package's entry is gone.
+            sh = shadowed.get(did)
+            if rec['origin'] == 'unmanaged' and sh and sh[1] != home_data:
+                srec = by_system_file(did, sh[0], sh[1], read_entry(sh[0]) or {})
+                if srec['origin'] != 'unmanaged':
+                    rec.update(srec)
+                    rec['systemFile'] = sh[0]
         if did in overrides:
             rec.update(protected=True, reason='protected-apps.txt override')
         if not vis:
