@@ -67,9 +67,14 @@ if ! grep -qxF fcitx5-mac-theme "$S/migrations" 2>/dev/null; then
             -e 's/^UseAccentColor=True$/UseAccentColor=False/' \
             -e 's/^# Use the GNOME accent colour for the highlighted candidate\.$/# macOS-style blue highlight (mac-light \/ mac-dark themes) instead of the GNOME accent colour./' \
             "$FC" && echo "fcitx5: candidate theme default -> mac-light / mac-dark"
-        # a running fcitx5 picks it up now, otherwise at its next start
-        gdbus call --session --dest org.fcitx.Fcitx5 --object-path /controller \
-            --method org.fcitx.Fcitx.Controller1.ReloadConfig >/dev/null 2>&1 || true
+        # a running fcitx5 picks it up now, otherwise at its next start. Only
+        # call it when it runs: org.fcitx.Fcitx5 is D-Bus activatable, and the
+        # call would otherwise start fcitx5 from this service (at login,
+        # before the graphical session is up).
+        if pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
+            gdbus call --session --dest org.fcitx.Fcitx5 --object-path /controller \
+                --method org.fcitx.Fcitx.Controller1.ReloadConfig >/dev/null 2>&1 || true
+        fi
     fi
     echo fcitx5-mac-theme >> "$S/migrations"
 fi
