@@ -47,3 +47,12 @@ with no relogin needed. Lookups stop at 190 per month (counter in
 `~/.cache/smart-search/aerodatabox-usage.json`).
 
 Other settings go in `~/.config/smart-search/config.json` (see `config.example.json`).
+Changes are picked up live.
+
+- `weatherCity`: city for a bare `weather` query (empty = the city of your system time zone).
+- `currencyTargets`: currencies shown for `100 eur`-style queries with no target.
+- `extraTimeZones`: extra zones for clock conversions such as `3pm PST` or
+  `10:30 EST in CST`, e.g. `["Beijing"]` or `["Asia/Shanghai", "Europe/Berlin"]`
+  (names the search understands, or IANA ids; unknown entries are skipped). Default
+  none: `3pm PST` shows your local time plus UTC; with extra zones it shows local
+  time plus those zones (at most three rows).

@@ -316,6 +316,14 @@ function convertRows(q, targets) {
     return rows;
 }
 
+const DUR_UNIT_NAMES = {d: 'days', h: 'hours', min: 'minutes', s: 'seconds'};
+
+/** "1 h" → "hours", "1 h 30 min 5 s" → "hours, minutes & seconds" */
+function durationUnitsLabel(hms) {
+    const names = hms.split(' ').filter((_, i) => i % 2 === 1).map(u => DUR_UNIT_NAMES[u] ?? u);
+    return names.length > 1 ? `${names.slice(0, -1).join(', ')} & ${names.at(-1)}` : names[0];
+}
+
 function durationRows(q) {
     const sec = q.base;
     if (sec <= 0 || sec > 1e8)
@@ -325,7 +333,7 @@ function durationRows(q) {
     if (q.unit.key === 'sec') {
         if (sec < 60)
             return [];
-        rows.push(row(hms, `${q.display} → minutes & seconds`, {icon: ICON.time}));
+        rows.push(row(hms, `${q.display} → ${durationUnitsLabel(hms)}`, {icon: ICON.time}));
         rows.push(row(`${fmt(sec / 60)} min`, `${q.display} → minutes`, {icon: ICON.time}));
     } else if (q.unit.key === 'min') {
         if (sec >= 3600 && hms !== q.display)
@@ -435,6 +443,12 @@ function fmtMoney(v, code) {
     return CUR_PREFIX[code] ? `${v < 0 ? '-' : ''}${CUR_PREFIX[code]}${n.replace(/^-/, '')}` : `${n} ${code}`;
 }
 
+/** Amount with an unambiguous code: "$5,000 USD", "5,000 JPY" (never "JPY JPY"). */
+function fmtMoneyCode(v, code) {
+    const s = fmtMoney(v, code);
+    return CUR_PREFIX[code] ? `${s} ${code}` : s;
+}
+
 function parseMoney(q) {
     const mult = s => (!s ? 1 : /^k$/i.test(s) ? 1e3 : /^m$/i.test(s) ? 1e6 : 1);
     let m = q.match(new RegExp(`^(${CUR_RE_SYM})\\s*(${NUM})\\s*([kKmM])?(?:\\s+${SEP}\\s+(.+))?$`, 'i'));
@@ -478,7 +492,7 @@ function currencyAnswers(q, ctx) {
         if (!rates[t] || t === p.code)
             continue;
         const v = p.amount / rates[p.code] * rates[t];
-        rows.push(row(fmtMoney(v, t), `${fmtMoney(p.amount, p.code)} ${p.code} → ${t} (rates from ${data.date})`,
+        rows.push(row(fmtMoney(v, t), `${fmtMoneyCode(p.amount, p.code)} → ${t} (rates from ${data.date})`,
             {icon: ICON.money, copy: fmtFixed(v, t === 'JPY' || t === 'KRW' ? 0 : 2).replace(/,/g, '')}));
     }
     return rows;
@@ -663,7 +677,29 @@ ZONES.nyc.label = 'New York';
 ZONES.dc.label = 'Washington';
 ZONES.hk.label = 'Hong Kong';
 ZONES.uk.label = 'London';
-const BEIJING = {id: 'Asia/Shanghai', label: 'Beijing'};
+const UTC_ZONE = {id: 'UTC', label: 'UTC'};
+
+/**
+ * config.extraTimeZones: zones added to "3pm PST"-style conversions, as names
+ * this parser knows ("Beijing", "tokyo", "CET") or IANA ids ("Asia/Shanghai").
+ * Default none. Unknown entries are skipped.
+ */
+function extraZones(ctx, now) {
+    const list = ctx.config?.extraTimeZones;
+    if (!Array.isArray(list))
+        return [];
+    const out = [];
+    for (const e of list) {
+        if (typeof e !== 'string' || !e.trim())
+            continue;
+        let z = lookupZone(e);
+        if (!z && e.includes('/'))
+            z = {id: e.trim(), label: e.trim().split('/').pop().replace(/_/g, ' ')};
+        if (z && wallOf(ctx, z.id, now))
+            out.push(z);
+    }
+    return out;
+}
 
 export function lookupZone(s) {
     const k = s.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[?.!,]+$/, '');
@@ -799,14 +835,15 @@ function timeAnswers(q, ctx) {
     const sw = wallOf(ctx, src.id, utc);
     const srcText = `${fmtClock(sw)} ${zoneLabel(src, sw, ctx)}`;
 
-    let targets = dst ? [dst, local, BEIJING] : [local, BEIJING, {id: 'UTC', label: 'UTC'}];
+    const extra = extraZones(ctx, now);
+    let targets = dst ? [dst, local, ...extra] : [local, ...extra, UTC_ZONE];
     const seen = new Set([src.id]);
     targets = targets.filter(t => {
         if (!t.id || seen.has(t.id))
             return false;
         seen.add(t.id);
         return true;
-    }).slice(0, dst ? 3 : 2);
+    }).slice(0, Math.min(3, dst ? 2 + extra.length : 1 + Math.max(1, extra.length)));
 
     const rows = [];
     for (const t of targets) {
