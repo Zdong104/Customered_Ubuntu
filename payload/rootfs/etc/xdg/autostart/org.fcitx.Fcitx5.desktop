@@ -1,0 +1,20 @@
+[Desktop Entry]
+# preload: start fcitx5 at login for every user. Debian/Ubuntu leave this to
+# im-config's im-launch.desktop, which does nothing on GNOME when ibus is
+# installed, so on stock Ubuntu fcitx5 never starts. Same name as fcitx5's own
+# entry, so a user's ~/.config/autostart/org.fcitx.Fcitx5.desktop (for example
+# with Hidden=true) overrides it.
+Name=Fcitx 5
+GenericName=Input Method
+Comment=Start Input Method
+Exec=/usr/bin/fcitx5
+TryExec=/usr/bin/fcitx5
+Icon=fcitx
+Terminal=false
+Type=Application
+NoDisplay=true
+StartupNotify=false
+X-GNOME-AutoRestart=false
+X-GNOME-Autostart-Notify=false
+X-KDE-autostart-after=panel
+X-KDE-StartupNotify=false

@@ -55,6 +55,25 @@ if isinstance(ti, dict) and ti.get("backend") == "auto":
 PY
 fi
 
+# fcitx5: releases up to v2026.11.09 gave new users a classicui.conf with the
+# stock "default" / "default-dark" themes; preload now ships macOS-style
+# mac-light / mac-dark. A file that still names both stock themes is switched
+# (once per user); a user who picked any other theme keeps it.
+FC=${XDG_CONFIG_HOME:-$HOME/.config}/fcitx5/conf/classicui.conf
+if ! grep -qxF fcitx5-mac-theme "$S/migrations" 2>/dev/null; then
+    if [ -f "$FC" ] && grep -qx 'Theme=default' "$FC" && grep -qx 'DarkTheme=default-dark' "$FC" &&
+       [ -d /usr/share/fcitx5/themes/mac-light ] && [ -d /usr/share/fcitx5/themes/mac-dark ]; then
+        sed -i -e 's/^Theme=default$/Theme=mac-light/' -e 's/^DarkTheme=default-dark$/DarkTheme=mac-dark/' \
+            -e 's/^UseAccentColor=True$/UseAccentColor=False/' \
+            -e 's/^# Use the GNOME accent colour for the highlighted candidate\.$/# macOS-style blue highlight (mac-light \/ mac-dark themes) instead of the GNOME accent colour./' \
+            "$FC" && echo "fcitx5: candidate theme default -> mac-light / mac-dark"
+        # a running fcitx5 picks it up now, otherwise at its next start
+        gdbus call --session --dest org.fcitx.Fcitx5 --object-path /controller \
+            --method org.fcitx.Fcitx.Controller1.ReloadConfig >/dev/null 2>&1 || true
+    fi
+    echo fcitx5-mac-theme >> "$S/migrations"
+fi
+
 # 2. extensions: the preload default list (schema default + override, read via
 # the memory backend so the user's own value does not mask it), minus what
 # was offered before; installed system-wide ones only.

@@ -238,11 +238,18 @@ Installs fcitx5 with pinyin and cloud pinyin, Chinese/English language packs and
 fcitx5 the input method for every toolkit (GTK, Qt, XWayland, Electron). Pinyin is added as a second
 input method: the US keyboard stays first, so typing starts in English.
 
+On stock Ubuntu GNOME, fcitx5 never starts even when installed: im-config's autostart does nothing when
+ibus is present, and GNOME starts ibus-daemon instead. The package starts fcitx5 at login for every
+user and keeps ibus-daemon from starting while fcitx5 is the configured input method; GNOME Shell then
+talks to fcitx5 through fcitx5's IBus frontend, so pinyin also works in the overview search.
+
 **How to use:** `Ctrl+Space` switches between English and pinyin.
 
 **Source:** `payload/rootfs/etc/skel/.config/fcitx5/` (`profile`, `config`, `conf/*.conf`),
 `payload/rootfs/etc/environment.d/90-preload-fcitx5.conf`, `payload/rootfs/etc/skel/.xinputrc`,
-`payload/provision.sh` (`step_files`), packages in `payload/packages.txt`
+`payload/rootfs/etc/xdg/autostart/org.fcitx.Fcitx5.desktop` (start at login),
+`payload/rootfs/usr/lib/systemd/user/org.freedesktop.IBus.session.GNOME.service.d/90-preload-fcitx5.conf`
+(no ibus-daemon), `payload/provision.sh` (`step_files`), packages in `payload/packages.txt`
 
 ### macOS-style candidate themes
 
@@ -253,10 +260,12 @@ follow the system dark mode.
 **How to use:** automatic. Themes are `mac-light` / `mac-dark`, selectable in fcitx5's Configure tool
 under Classic User Interface. The themes are installed system-wide for every user; the setting that
 selects them comes from `/etc/skel`, so it is the default for a user who does not already have their
-own fcitx5 settings. The generator script is `tools/make_mac_themes.py` (repository only).
+own fcitx5 settings. Accounts that got the stock-theme settings from an earlier release are switched to
+the mac themes once by the per-user sync, unless they picked another theme themselves. The generator
+script is `tools/make_mac_themes.py` (repository only).
 
 **Source:** `payload/rootfs/usr/share/fcitx5/themes/` (`mac-light/`, `mac-dark/`),
-`payload/rootfs/etc/skel/.config/fcitx5/conf/classicui.conf`
+`payload/rootfs/etc/skel/.config/fcitx5/conf/classicui.conf`, migration in `updater/preload-user-sync`
 
 ### Cloud pinyin without flicker
 

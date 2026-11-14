@@ -159,6 +159,9 @@ sync_users() {
     for uid in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $1}'); do
         user=$(id -nu "$uid" 2>/dev/null) || continue
         [ "$uid" -ge 1000 ] || continue
+        # the user manager must see new / changed user units and drop-ins
+        # (and regenerate xdg-autostart units) before the next login
+        timeout 30 systemctl --user -M "$user@" daemon-reload 2>/dev/null || true
         timeout 60 systemctl --user -M "$user@" start preload-user-sync.service 2>/dev/null || true
     done
 }
