@@ -291,6 +291,23 @@ upgrades, and Chrome web-app (PWA) launchers are re-patched whenever Chrome rege
 `payload/rootfs/usr/local/bin/chrome-pwa-x11-patch`, `payload/rootfs/usr/lib/systemd/user/chrome-pwa-x11.{path,service}`,
 `payload/rootfs/etc/xdg/autostart/google-chrome-x11.desktop`
 
+### WeChat with the system input method and notifications
+
+WeChat for Linux (4.1) bundles its own Qt and its own fcitx5 input module. With stock settings, on
+Wayland it draws a blinking candidate popup of its own instead of using the system fcitx5, and when
+forced onto XWayland pinyin works but WeChat sends no desktop notifications. WeChat's launcher is
+replaced so it runs natively on Wayland and types through Wayland's text-input protocol: GNOME Shell
+passes the input to fcitx5 (through fcitx5's IBus frontend), so the normal macOS-style candidate bar
+appears at the cursor and notifications work.
+
+**How to use:** automatic when WeChat is started from the app grid or dock. The launcher is
+regenerated from WeChat's own after every package upgrade. Known limitation: if WeChat is started
+some other way (for example a login item WeChat creates itself, or running `/usr/bin/wechat` from a
+terminal), it uses its bundled input popup again; start it from the app grid instead.
+
+**Source:** `payload/rootfs/usr/local/lib/preload/reapply.sh` (writes
+`/usr/local/share/applications/wechat.desktop`), relies on the fcitx5 setup above
+
 ---
 
 ## 4. Stability Guard

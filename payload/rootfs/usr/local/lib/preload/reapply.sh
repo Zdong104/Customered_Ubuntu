@@ -9,6 +9,8 @@
 #     and Claude Desktop (--ozone-platform=x11), so fcitx5's candidate window is
 #     positioned correctly. /usr/local/share precedes /usr/share in XDG_DATA_DIRS.
 #     They are regenerated from the current package .desktop files every time.
+#     WeChat gets a Wayland text-input-v3 launcher (system fcitx5 candidates
+#     and working notifications), regenerated the same way.
 #  3. ONLYOFFICE plugins shipped by preload (ProCharts) into ONLYOFFICE's
 #     system plugin folder under /opt/onlyoffice.
 
@@ -53,6 +55,20 @@ do
         "$src" > "$OUT/$name.tmp" && mv "$OUT/$name.tmp" "$OUT/$name"
     chmod 644 "$OUT/$name"
 done
+# WeChat (Qt 6 with its own bundled fcitx5-qt): run it natively on Wayland and
+# route input through Wayland text-input-v3 -> GNOME Shell -> fcitx5's IBus
+# frontend, so the system fcitx5 draws the (mac-themed) candidate bar. Its
+# bundled IM module draws a blinking popup of its own on native Wayland, and
+# under XWayland WeChat sends no desktop notifications. QT_IM_MODULES=fcitx
+# from /etc/environment.d would select the bundled module, hence -u.
+src=/usr/share/applications/wechat.desktop
+if [ -f "$src" ]; then
+    sed -E '/^Exec=/{/QT_IM_MODULE=text-input/!s#^Exec=#Exec=env -u QT_IM_MODULES QT_QPA_PLATFORM=wayland QT_IM_MODULE=text-input-unstable-v3 #}' \
+        "$src" > "$OUT/wechat.desktop.tmp" && mv "$OUT/wechat.desktop.tmp" "$OUT/wechat.desktop"
+    chmod 644 "$OUT/wechat.desktop"
+else
+    rm -f "$OUT/wechat.desktop"
+fi
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$OUT" 2>/dev/null
 
 # --- 3. ONLYOFFICE plugins shipped by preload ------------------------------
