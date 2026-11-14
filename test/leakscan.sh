@@ -34,8 +34,10 @@ BAD_PATHS=(root/.ssh root/.bash_history root/snap root/Desktop etc/xdg/mimeapps.
     var/lib/docker/image var/lib/docker/containers var/snap/lxd/common/lxd/storage-pools)
 SECRET_NAMES=(.bash_history .python_history .git-credentials .gitconfig .netrc .npmrc
     .condarc-token auth.json recently-used.xbel .zsh_history .wget-hsts)
-# E-mail-shaped strings that are GNOME extension UUIDs, not addresses.
-EMAIL_OK_RE='@([a-z0-9-]+\.local|[A-Za-z0-9.-]*\.?invalid|rastersoft\.com|corgijan\.dev|canonical\.com|ubuntu\.com|cua|[A-Za-z0-9-]+\.github\.io|users\.noreply\.github\.com)$'
+# E-mail-shaped strings that are not addresses: extension UUIDs, systemd template
+# units (org.gnome.Shell@wayland.service), JS stack frames (fn@file, @resource)
+# and GVariant format strings ("(&s@ay)").
+EMAIL_OK_RE='@([a-z0-9-]+\.local|[A-Za-z0-9.-]*\.?invalid|rastersoft\.com|corgijan\.dev|canonical\.com|ubuntu\.com|cua|[A-Za-z0-9-]+\.github\.io|users\.noreply\.github\.com|(ubuntu|wayland|x11)\.service|ay|resource|file)$'
 # Public-key material is allowed only where it belongs.
 PUBKEY_OK_FILES='^(updater/allowed_signers|bootstrap\.sh)$'
 PGP_OK_FILES='^payload/keys/'
