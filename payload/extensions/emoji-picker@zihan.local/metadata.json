@@ -1,0 +1,8 @@
+{
+  "uuid": "emoji-picker@zihan.local",
+  "name": "Emoji Picker",
+  "description": "macOS-style emoji picker. Super+. (or Ctrl+Super+Space) opens it near the text cursor when the shell knows it, else centred on the focused window's monitor. Arrows move, Enter inserts, 1-9 pick from the highlighted row, typing searches (English and Chinese keywords), Tab / Ctrl+Left/Right switch category, Esc closes. The emoji is pasted into the previously focused app through the clipboard and a synthesized Ctrl+V (Ctrl+Shift+V in terminals); the old clipboard is restored afterwards.",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.emoji-picker",
+  "version": 1
+}

@@ -1,0 +1,17 @@
+[Unit]
+Description=Stability Guard: record GNOME Shell logout hangs (SIGKILL on logout)
+Documentation=file:///usr/local/bin/shell-logout-hang-log
+After=graphical-session.target
+PartOf=graphical-session.target
+ConditionUser=!@system
+
+[Service]
+Type=oneshot
+# Let the shell finish starting so the notification has somewhere to go.
+ExecStartPre=/bin/sleep 20
+ExecStart=/usr/local/bin/shell-logout-hang-log
+MemoryMax=100M
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target

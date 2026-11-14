@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.emoji-picker" path="/org/gnome/shell/extensions/emoji-picker/">
+    <key name="toggle-picker" type="as">
+      <default><![CDATA[['<Super>period', '<Control><Super>space']]]></default>
+      <summary>Open / close the emoji picker</summary>
+    </key>
+    <key name="recent-emoji" type="as">
+      <default>[]</default>
+      <summary>Recently used emoji, most recent first</summary>
+    </key>
+    <key name="recent-max" type="i">
+      <range min="9" max="90"/>
+      <default>36</default>
+      <summary>How many recently used emoji to keep</summary>
+    </key>
+    <key name="skin-tone" type="i">
+      <range min="0" max="5"/>
+      <default>0</default>
+      <summary>Skin tone for emoji that support it (0 = default yellow, 1 = light ... 5 = dark)</summary>
+    </key>
+    <key name="restore-clipboard-delay" type="i">
+      <range min="0" max="10000"/>
+      <default>800</default>
+      <summary>Milliseconds after the paste before the previous clipboard is put back (0 = leave the emoji on the clipboard)</summary>
+    </key>
+    <key name="terminal-wm-classes" type="as">
+      <default>['gnome-terminal-server', 'org.gnome.terminal', 'kgx', 'org.gnome.console', 'ptyxis', 'org.gnome.ptyxis', 'com.mitchellh.ghostty', 'ghostty', 'kitty', 'alacritty', 'org.wezfurlong.wezterm', 'wezterm', 'wezterm-gui', 'xterm', 'uxterm', 'tilix', 'com.gexperts.tilix', 'terminator', 'konsole', 'org.kde.konsole', 'foot', 'footclient', 'com.raggesilver.blackbox', 'xfce4-terminal', 'mate-terminal', 'lxterminal', 'qterminal', 'urxvt', 'st-256color', 'dev.warp.warp']</default>
+      <summary>Window classes / app ids that get Ctrl+Shift+V instead of Ctrl+V (matched case-insensitively against WM_CLASS, its instance and the app id)</summary>
+    </key>
+  </schema>
+</schemalist>

@@ -1,0 +1,111 @@
+#!/usr/bin/python3 -I
+"""Record every time GNOME Shell hung on logout and had to be SIGKILLed.
+
+Part of Stability Guard.  Runs once per login (shell-logout-hang-log.service). It scans the user journal
+since the last run for systemd's "org.gnome.Shell@*.service: State
+'stop-sigterm' timed out. Killing." and, for each one, notes which app scopes
+also hung within the same few seconds and whether systemd then ran
+org.gnome.Shell-disable-extensions.service (which flips
+org.gnome.shell disable-user-extensions to true and turns every user
+extension off).
+
+Each incident is appended to $XDG_STATE_HOME/shell-logout-hangs.log
+(default ~/.local/state; trimmed to the newest MAX_LINES lines), and a
+desktop notification says so. `--all` rescans the whole journal (no notify).
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+STATE_DIR = os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state')
+LOG = os.path.join(STATE_DIR, 'shell-logout-hangs.log')
+SINCE = os.path.join(STATE_DIR, 'shell-logout-hangs.since')
+WINDOW_S = 15  # other timeouts / disable-extensions this close belong to the same logout
+MAX_LINES = 1000  # log size cap (one short line per incident)
+
+PATTERN = (r"org\.gnome\.Shell@.*stop-sigterm. timed out"
+           r"|Stopping timed out\. Killing"
+           r"|Started org\.gnome\.Shell-disable-extensions")
+SCOPE_RE = re.compile(r'app-(?:gnome|flatpak)-(.+?)-\d+\.scope')
+
+
+def journal(since):
+    args = ['journalctl', '--user', '-q', '--no-pager', '-o', 'json', '-g', PATTERN]
+    if since:
+        args += ['--since', f'@{since}']
+    out = subprocess.run(args, capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        yield int(e['__REALTIME_TIMESTAMP']) / 1e6, e.get('MESSAGE', '')
+
+
+def incidents(entries):
+    entries = sorted(entries)
+    for t, msg in entries:
+        if 'org.gnome.Shell@' not in msg or 'stop-sigterm' not in msg:
+            continue
+        near = [m for u, m in entries if abs(u - t) <= WINDOW_S]
+        apps = sorted({m.group(1).replace('\\x2d', '-')
+                       for s in near if 'Stopping timed out' in s
+                       for m in [SCOPE_RE.search(s)] if m})
+        disabled = any('disable-extensions' in s for s in near)
+        yield t, apps, disabled
+
+
+def trim(path, keep=MAX_LINES):
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    if len(lines) > keep:
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            f.writelines(lines[-keep:])
+        os.replace(tmp, path)
+
+
+def main():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    rescan = '--all' in sys.argv
+    since = None
+    if not rescan and os.path.exists(SINCE):
+        since = float(open(SINCE).read().strip() or 0) or None
+    now = time.time()
+
+    found = list(incidents(journal(since)))
+    if rescan and os.path.exists(LOG):
+        os.remove(LOG)
+    with open(LOG, 'a') as f:
+        for t, apps, disabled in found:
+            f.write('%s  shell SIGKILLed on logout | also hung: %s | extensions turned off: %s\n' % (
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t)),
+                ', '.join(apps) or '-', 'YES' if disabled else 'no'))
+    trim(LOG)
+    with open(SINCE, 'w') as f:
+        f.write('%d\n' % now)
+
+    if rescan or not found:
+        return
+    total = sum(1 for _ in open(LOG))
+    off = subprocess.run(['gsettings', 'get', 'org.gnome.shell', 'disable-user-extensions'],
+                         capture_output=True, text=True).stdout.strip() == 'true'
+    body = 'Logged in %s (%d so far).' % (LOG.replace(os.path.expanduser('~'), '~'), total)
+    if found[-1][1]:
+        body += ' Also hung: %s.' % ', '.join(found[-1][1])
+    if off:
+        body += ('\nUser extensions are OFF. Restore with:\n'
+                 'gsettings set org.gnome.shell disable-user-extensions false')
+    subprocess.run(['notify-send', '-a', 'Stability Guard', '-i', 'dialog-warning',
+                    *(['-u', 'critical'] if off else []),
+                    'GNOME Shell hung on the last logout', body])
+
+
+if __name__ == '__main__':
+    main()

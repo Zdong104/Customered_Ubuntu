@@ -38,7 +38,7 @@ import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-import {MAX_WORKSPACES} from './primary.js';
+import {MAX_WORKSPACES, isValidMonitor} from './primary.js';
 
 /** maximize-own-workspace's tag on places it created; see the header. */
 const MADE = Symbol.for('maximize-own-workspace.made');
@@ -260,10 +260,14 @@ export class CrossMonitorMove {
  * them to the new monitor.
  */
 function moveToMonitor(window, monitor) {
+    // `monitor` may be stale by now (islands.land runs this later, and an
+    // undock renumbers monitors): skip rather than hand Mutter a bad index.
+    if (!isValidMonitor(monitor))
+        return;
     const from = window.get_monitor();
     if (from === monitor)
         return;
-    const floating = from >= 0 && !window.is_fullscreen() &&
+    const floating = isValidMonitor(from) && !window.is_fullscreen() &&
         !window.maximized_horizontally && !window.maximized_vertically;
     const rect = window.get_frame_rect();
     const fromArea = floating ? window.get_work_area_for_monitor(from) : null;
@@ -272,6 +276,8 @@ function moveToMonitor(window, monitor) {
     if (!floating || window.get_monitor() !== monitor)
         return;
 
+    if (!isValidMonitor(monitor))
+        return;
     const area = window.get_work_area_for_monitor(monitor);
     const fit = (offset, room) => Math.max(0, Math.min(offset, room));
     window.move_frame(true,

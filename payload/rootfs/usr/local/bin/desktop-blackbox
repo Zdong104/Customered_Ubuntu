@@ -1,0 +1,1176 @@
+#!/usr/bin/python3
+"""desktop-blackbox: always-on black-box logger for the GNOME desktop.
+
+Part of Stability Guard.  Records desktop events (lock/unlock, suspend/resume,
+lid, DPMS, monitor changes, kernel hotplug, gnome-shell restarts, login),
+snapshots desktop state at +0/+3/+15 s around each incident, follows the
+journal for shell/kernel errors, and writes anomaly records.  Output: JSONL in
+$XDG_STATE_HOME/desktop-blackbox/events.jsonl (default ~/.local/state; rotated,
+at most 2 x 20 MB).
+
+Read it with: desktop-blackbox-report
+"""
+import argparse
+import collections
+import ctypes
+import fcntl
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import traceback
+
+import gi
+from gi.repository import Gio, GLib
+
+try:
+    gi.require_version('GUdev', '1.0')
+    from gi.repository import GUdev
+except Exception:  # pragma: no cover
+    GUdev = None
+
+MAX_BYTES = 20 * 1024 * 1024
+INCIDENT_JOIN_S = 10       # an event within 10 s of the last one joins the incident
+INCIDENT_MAX_S = 120
+ERR_ATTRIB_S = 60          # errors within 60 s after an event are linked to it
+PERIODIC_S = 1800
+CALL_TIMEOUT_MS = 1500
+SELFTEST_MARK = 'desktop-blackbox-selftest'
+
+STATE_HOME = os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state')
+DATA_HOME = os.environ.get('XDG_DATA_HOME') or os.path.expanduser('~/.local/share')
+# Every extension found here is "known" for attributing journal errors.
+EXT_DIRS = (os.path.join(DATA_HOME, 'gnome-shell/extensions'),
+            '/usr/local/share/gnome-shell/extensions',
+            '/usr/share/gnome-shell/extensions')
+# org.gnome.Shell@<session>.service: GNOME uses @wayland/@x11, Ubuntu @ubuntu.
+SHELL_UNITS = ('org.gnome.Shell@wayland.service', 'org.gnome.Shell@ubuntu.service',
+               'org.gnome.Shell@x11.service')
+
+EXT_STATES = {1: 'ACTIVE', 2: 'INACTIVE', 3: 'ERROR', 4: 'OUT_OF_DATE',
+              5: 'DOWNLOADING', 6: 'INITIALIZED', 7: 'DEACTIVATING',
+              8: 'ACTIVATING', 99: 'UNINSTALLED'}
+
+# --------------------------------------------------------------------------
+# Journal classification (pure functions; exercised by --selftest)
+# --------------------------------------------------------------------------
+SHELL_COMMS = {'gnome-shell', 'gjs', 'gnome-session-b', 'Xwayland'}
+ERR_PAT = re.compile(
+    r'JS ERROR|TypeError|ReferenceError|SyntaxError|RangeError|Exception|'
+    r'already disposed|has been finalized|assertion .* failed|-CRITICAL \*\*|'
+    r'Traceback|Extension .* (had|has) error|Error while|failed to load|'
+    r'segfault|core dump|dumped core|Unrecoverable|SIGSEGV|SIGABRT', re.I)
+WARN_PAT = re.compile(r'JS WARNING|-WARNING \*\*|\bwarning\b|\berror\b|failed', re.I)
+K_ERR_PAT = re.compile(
+    r'\*ERROR\*|flip_done timed out|timed out|link training|Link Training|'
+    r'segfault|general protection|BUG:|WARNING: CPU|Call Trace|GPU HANG|'
+    r'hang|Oops|failed', re.I)
+K_KEY_PAT = re.compile(
+    r'\b(drm|i915|xe|nouveau|nvidia|nvidia-modeset|NVRM|thunderbolt|typec|'
+    r'typec_displayport|ucsi|usb4|eDP|DP-\d|HDMI|hotplug|backlight|'
+    r'intel_backlight|PM: suspend|PM: resume)\b', re.I)
+K_DROP_PAT = re.compile(r'kauditd_printk_skb|^audit:|audit\(', re.I)
+UNIT_ERR_PAT = re.compile(
+    r'Failed|core-dump|dumped|SIGKILL|SIGABRT|SIGSEGV|SIGTRAP|timed out|'
+    r'Killing|status=\d+/', re.I)
+
+_hex = re.compile(r'0x[0-9a-fA-F]+')
+_longhex = re.compile(r'\b[0-9a-fA-F]{8,}\b')
+_num = re.compile(r'\d+')
+_ws = re.compile(r'\s+')
+_randprefix = re.compile(r'^[A-Za-z0-9_-]{10}, ')
+_ext_path = re.compile(r'extensions/([^/\s"\'()]+@[^/\s"\'()]+)/')
+_gjs_type = re.compile(r'Gjs_([A-Za-z0-9_-]+)')
+_frame = re.compile(r'(?:(\w[\w$.<>/]*)@)?(?:resource|file)://\S*?/([^/\s:]+\.js)')
+_prefix = re.compile(r'^([A-Za-z][\w.-]{1,40}):\s')
+
+
+def _session_modes(uuid):
+    for base in EXT_DIRS:
+        try:
+            with open(os.path.join(base, uuid, 'metadata.json')) as f:
+                return json.load(f).get('session-modes') or ['user']
+        except Exception:
+            continue
+    return ['user']
+
+
+def normalize(text):
+    t = _randprefix.sub('', text)
+    t = _hex.sub('0x?', t)
+    t = _longhex.sub('#', t)
+    t = _num.sub('N', t)
+    return _ws.sub(' ', t).strip()
+
+
+def attribute_ext(msg, ident, known):
+    """Return an extension uuid this message belongs to, or None."""
+    if ident and '@' in ident:
+        return ident
+    m = _ext_path.search(msg)
+    if m:
+        return m.group(1)
+    for uuid in known:
+        if uuid in msg:
+            return uuid
+    m = _gjs_type.search(msg)
+    if m:
+        tname = m.group(1)
+        for uuid in known:
+            mangled = re.sub(r'[@.]', '_', uuid)
+            if tname.startswith(mangled):
+                return uuid
+    m = _prefix.match(msg)
+    if m:
+        p = m.group(1).lower()
+        for uuid in known:
+            if uuid.split('@')[0].lower() == p:
+                return uuid
+    return None
+
+
+def _msg_text(d):
+    m = d.get('MESSAGE')
+    if isinstance(m, list):
+        try:
+            m = bytes(m).decode('utf-8', 'replace')
+        except Exception:
+            m = ''
+    return m if isinstance(m, str) else ''
+
+
+def classify(d, known=(), my_uid=None):
+    """Classify one journal JSON entry.  Returns dict or None (ignored)."""
+    msg = _msg_text(d)
+    if not msg:
+        return None
+    try:
+        prio = int(d.get('PRIORITY', 6))
+    except ValueError:
+        prio = 6
+    comm = d.get('_COMM', '')
+    ident = d.get('SYSLOG_IDENTIFIER', '')
+    transport = d.get('_TRANSPORT', '')
+    uid = d.get('_UID')
+    if SELFTEST_MARK in msg:
+        src, sev = 'selftest', 'selftest'
+    elif transport == 'kernel':
+        if K_DROP_PAT.search(msg):
+            return None
+        src = 'kernel'
+        if prio <= 3 or (K_ERR_PAT.search(msg) and prio <= 5):
+            sev = 'error'
+        elif prio == 4:
+            sev = 'warn'
+        elif K_ERR_PAT.search(msg) and K_KEY_PAT.search(msg):
+            sev = 'error'
+        elif K_KEY_PAT.search(msg):
+            sev = 'info'
+        else:
+            return None
+    elif ident == 'systemd-coredump':
+        if not re.search(r'gnome-shell|gjs|Xwayland|gnome-session|mutter|gsd-|'
+                         r'dumped core', msg):
+            return None
+        src, sev = 'coredump', 'error'
+    elif d.get('USER_UNIT', '').startswith('org.gnome.Shell') or \
+            d.get('UNIT', '').startswith('org.gnome.Shell'):
+        src = 'shell-unit'
+        if UNIT_ERR_PAT.search(msg):
+            sev = 'error'
+        else:
+            return None
+    elif comm in SHELL_COMMS or ident == 'gnome-shell' or ident.startswith('gnome-session'):
+        if my_uid is not None and uid is not None and str(uid) != str(my_uid):
+            return None   # gdm greeter etc.
+        src = {'gnome-session-b': 'session', 'Xwayland': 'xwayland'}.get(comm, 'shell')
+        if prio <= 3:
+            sev = 'error'
+        elif prio == 4:
+            sev = 'error' if ERR_PAT.search(msg) else 'warn'
+        elif ERR_PAT.search(msg):
+            sev = 'error'
+        elif WARN_PAT.search(msg):
+            sev = 'warn'
+        else:
+            return None
+    else:
+        return None
+
+    lines = msg.split('\n')
+    head = lines[0]
+    frame = None
+    for ln in lines[1:12]:
+        fm = _frame.search(ln)
+        if fm:
+            frame = (fm.group(1) + '@' if fm.group(1) else '') + fm.group(2)
+            break
+    sig = src + ': ' + normalize(head)[:180]
+    if frame:
+        sig += ' @' + normalize(frame)
+    out = {'src': src, 'sev': sev, 'sig': sig, 'prio': prio,
+           'ext': attribute_ext(msg, ident, known),
+           'msg': head[:400]}
+    stack = [ln.strip() for ln in lines[1:9] if ln.strip()]
+    if stack:
+        out['stack'] = [s[:200] for s in stack]
+    if ident and ident not in ('gnome-shell', 'kernel'):
+        out['ident'] = ident
+    return out
+
+
+# --------------------------------------------------------------------------
+# Storage
+# --------------------------------------------------------------------------
+class Store:
+    def __init__(self, path, max_bytes=MAX_BYTES):
+        self.path = path
+        self.max_bytes = max_bytes
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.fh = open(path, 'a', encoding='utf-8')
+
+    def last_record(self):
+        try:
+            with open(self.path, 'rb') as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 65536))
+                tail = f.read().splitlines()
+            for ln in reversed(tail):
+                try:
+                    return json.loads(ln)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    def write(self, rec):
+        t = rec.get('t') or time.time()
+        rec['t'] = round(t, 3)
+        rec.setdefault('ts', time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t))
+                       + '.%03d' % int((t % 1) * 1000))
+        # keep ts / t / kind first for readability
+        ordered = {'ts': rec.pop('ts'), 't': rec.pop('t'), 'kind': rec.pop('kind')}
+        ordered.update(rec)
+        self.fh.write(json.dumps(ordered, separators=(',', ':'), ensure_ascii=False,
+                                 default=str) + '\n')
+        self.fh.flush()
+        if self.fh.tell() > self.max_bytes:
+            self.fh.close()
+            os.replace(self.path, self.path + '.1')
+            self.fh = open(self.path, 'a', encoding='utf-8')
+
+
+# --------------------------------------------------------------------------
+# Daemon
+# --------------------------------------------------------------------------
+def _set_pdeathsig():
+    try:
+        ctypes.CDLL('libc.so.6').prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+    except Exception:
+        pass
+
+
+class Daemon:
+    def __init__(self, args):
+        self.args = args
+        self.state_dir = args.state_dir
+        self.store = Store(os.path.join(self.state_dir, 'events.jsonl'))
+        self.cursor_path = os.path.join(self.state_dir, 'journal.cursor')
+        self.loop = GLib.MainLoop()
+        self.seq = 0
+        self.start_t = time.time()
+        self.my_uid = os.getuid()
+        self.incidents = {}          # id -> incident dict
+        self.cur_inc = None          # id of the incident new events may join
+        self.last_event = None       # (event_id, t, type, incident_id)
+        self.baseline = None         # last settled snapshot
+        self.prev_layout = None
+        self.prev_kconn = None
+        self.known_uuids = set()
+        self.err_state = {}          # sig -> dict(last_seen, pending, first, last, sev, ext, src)
+        self.self_err_seen = {}
+        self.cursor = None
+        self.cursor_saved = None
+        self.jproc = None
+        self.jbuf = b''
+        self.udev_pending = []
+        self.udev_timer = 0
+        self.psm = None
+        self.lid_closed = None
+        self.ssaver_active = None
+        self.session = None
+        self.system = None
+        self._scan_ext_dirs()
+
+    # ---------------- helpers ----------------
+    def guard(self, fn, ret=None):
+        def wrapped(*a, **kw):
+            try:
+                return fn(*a, **kw)
+            except Exception as e:
+                self.self_error(getattr(fn, '__name__', str(fn)), e)
+                return ret
+        return wrapped
+
+    def self_error(self, where, e):
+        try:
+            key = (where, repr(e)[:200])
+            now = time.time()
+            if now - self.self_err_seen.get(key, 0) < 60:
+                return
+            self.self_err_seen[key] = now
+            if len(self.self_err_seen) > 200:
+                self.self_err_seen.clear()
+            self.store.write({'kind': 'self-error', 'where': where, 'err': repr(e)[:300],
+                              'tb': traceback.format_exc().splitlines()[-6:]})
+        except Exception:
+            pass
+
+    def new_id(self):
+        self.seq += 1
+        return time.strftime('%m%d-%H%M%S') + '-%d' % self.seq
+
+    def dcall(self, bus, dest, path, iface, method, params=None, rtype=None):
+        if bus is None:
+            raise RuntimeError('no bus')
+        return bus.call_sync(dest, path, iface, method, params,
+                             GLib.VariantType(rtype) if rtype else None,
+                             Gio.DBusCallFlags.NO_AUTO_START, CALL_TIMEOUT_MS, None).unpack()
+
+    def _scan_ext_dirs(self):
+        for d in EXT_DIRS:
+            try:
+                for n in os.listdir(d):
+                    if '@' in n:
+                        self.known_uuids.add(n)
+            except OSError:
+                pass
+
+    # ---------------- state collection ----------------
+    def mutter_state(self):
+        out = {}
+        try:
+            serial, monitors, logical, props = self.dcall(
+                self.session, 'org.gnome.Mutter.DisplayConfig', '/org/gnome/Mutter/DisplayConfig',
+                'org.gnome.Mutter.DisplayConfig', 'GetCurrentState')
+        except Exception as e:
+            return {'err': str(e)[:160]}
+        mons = []
+        for spec, modes, mprops in monitors:
+            conn = spec[0]
+            cur = [m for m in modes if m[6].get('is-current')]
+            mode = '%dx%d@%.2f' % (cur[0][1], cur[0][2], cur[0][3]) if cur else None
+            mons.append({'c': conn, 'id': '%s %s' % (spec[1], spec[2]), 'mode': mode,
+                         'builtin': bool(mprops.get('is-builtin', False))})
+        logs = []
+        for x, y, scale, transform, primary, lmons, lprops in logical:
+            logs.append({'x': x, 'y': y, 'scale': round(scale, 3), 'rot': transform,
+                         'primary': bool(primary), 'c': [m[0] for m in lmons]})
+        layout = ' '.join(sorted(
+            '%s%s@%d,%dx%g%s' % ('+'.join(l['c']), '*' if l['primary'] else '', l['x'], l['y'],
+                                 l['scale'], ('r%d' % l['rot']) if l['rot'] else '')
+            for l in logs))
+        out.update({'serial': serial, 'layout': layout, 'monitors': mons, 'logical': logs,
+                    'layout_mode': props.get('layout-mode')})
+        try:
+            out['psm'] = self.dcall(self.session, 'org.gnome.Mutter.DisplayConfig',
+                                    '/org/gnome/Mutter/DisplayConfig',
+                                    'org.freedesktop.DBus.Properties', 'Get',
+                                    GLib.Variant('(ss)', ('org.gnome.Mutter.DisplayConfig',
+                                                          'PowerSaveMode')), '(v)')[0]
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def kernel_connectors():
+        out = {}
+        base = '/sys/class/drm'
+        try:
+            names = os.listdir(base)
+        except OSError:
+            return out
+        for n in names:
+            m = re.match(r'card(\d+)-(.+)$', n)
+            if not m:
+                continue
+            vals = []
+            for f in ('status', 'enabled', 'dpms'):
+                try:
+                    with open(os.path.join(base, n, f)) as fh:
+                        vals.append(fh.read().strip())
+                except OSError:
+                    vals.append('?')
+            if vals[0] != 'disconnected':
+                out[m.group(2)] = {'card': int(m.group(1)), 'status': vals[0],
+                                   'enabled': vals[1], 'dpms': vals[2]}
+        return out
+
+    @staticmethod
+    def lid_state():
+        try:
+            for d in os.listdir('/proc/acpi/button/lid'):
+                with open('/proc/acpi/button/lid/%s/state' % d) as f:
+                    return f.read().split(':', 1)[1].strip()
+        except Exception:
+            return None
+        return None
+
+    def ext_state(self):
+        out = {}
+        try:
+            exts = self.dcall(self.session, 'org.gnome.Shell',
+                              '/org/gnome/Shell', 'org.gnome.Shell.Extensions',
+                              'ListExtensions')[0]
+        except Exception as e:
+            exts = None
+            out['err'] = str(e)[:160]
+        try:
+            ss = Gio.Settings.new('org.gnome.shell')
+            gs_enabled = set(ss.get_strv('enabled-extensions'))
+            gs_disabled = set(ss.get_strv('disabled-extensions'))
+            out['user_disabled'] = ss.get_boolean('disable-user-extensions')
+        except Exception as e:
+            gs_enabled, gs_disabled = set(), set()
+            out['gs_err'] = str(e)[:160]
+        if exts is not None:
+            self.known_uuids.update(exts.keys())
+            bad = []
+            n_active = 0
+            for uuid, info in exts.items():
+                st = int(info.get('state', 0))
+                if st == 1:
+                    n_active += 1
+                enabled = bool(info.get('enabled', False))
+                if st in (3, 4) or (enabled and st != 1):
+                    b = {'uuid': uuid, 'state': EXT_STATES.get(st, str(st)), 'enabled': enabled}
+                    if info.get('error'):
+                        b['error'] = str(info['error'])[:300]
+                    bad.append(b)
+            out.update({'n': len(exts), 'active': n_active, 'bad': bad})
+            missing = sorted(u for u in gs_enabled - gs_disabled if u not in exts)
+            if missing:
+                out['missing'] = missing
+        return out
+
+    def shell_proc(self):
+        try:
+            pid = self.dcall(self.session, 'org.freedesktop.DBus', '/org/freedesktop/DBus',
+                             'org.freedesktop.DBus', 'GetConnectionUnixProcessID',
+                             GLib.Variant('(s)', ('org.gnome.Shell',)))[0]
+        except Exception:
+            return {}
+        out = {'pid': pid}
+        try:
+            with open('/proc/%d/status' % pid) as f:
+                for ln in f:
+                    if ln.startswith('VmRSS:'):
+                        out['rss_mb'] = round(int(ln.split()[1]) / 1024, 1)
+            with open('/proc/%d/stat' % pid) as f:
+                start_ticks = int(f.read().rsplit(')', 1)[1].split()[19])
+            with open('/proc/uptime') as f:
+                up = float(f.read().split()[0])
+            out['age_s'] = int(up - start_ticks / os.sysconf('SC_CLK_TCK'))
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def psi():
+        out = {}
+        try:
+            with open('/proc/pressure/memory') as f:
+                for ln in f:
+                    parts = ln.split()
+                    kv = dict(p.split('=') for p in parts[1:])
+                    out[parts[0] + '10'] = float(kv['avg10'])
+                    out[parts[0] + '60'] = float(kv['avg60'])
+        except Exception:
+            pass
+        return out
+
+    def workspaces(self):
+        out = {}
+        try:
+            out['n'] = Gio.Settings.new('org.gnome.desktop.wm.preferences').get_int('num-workspaces')
+            out['dynamic'] = Gio.Settings.new('org.gnome.mutter').get_boolean('dynamic-workspaces')
+        except Exception as e:
+            out['err'] = str(e)[:100]
+        return out
+
+    @staticmethod
+    def sticky_windows():
+        """XWayland client windows on all desktops (_NET_WM_DESKTOP == 0xFFFFFFFF)."""
+        env = dict(os.environ)
+        env.setdefault('DISPLAY', ':0')
+
+        def xprop(*a):
+            return subprocess.run(['xprop'] + list(a), env=env, capture_output=True,
+                                  text=True, timeout=3).stdout
+        out = []
+        try:
+            ids = re.findall(r'0x[0-9a-fA-F]+', xprop('-root', '_NET_CLIENT_LIST'))
+            for wid in ids:
+                t = xprop('-id', wid, '_NET_WM_DESKTOP', '_NET_WM_WINDOW_TYPE',
+                          'WM_CLASS', '_NET_WM_NAME', 'WM_NAME')
+                m = re.search(r'_NET_WM_DESKTOP\(CARDINAL\) = (\d+)', t)
+                if not m or int(m.group(1)) != 0xFFFFFFFF:
+                    continue
+                if '_NET_WM_WINDOW_TYPE_DOCK' in t or '_NET_WM_WINDOW_TYPE_DESKTOP' in t:
+                    continue
+                cm = re.search(r'WM_CLASS\(STRING\) = "[^"]*", "([^"]*)"', t)
+                tm = re.search(r'_NET_WM_NAME\(UTF8_STRING\) = "(.*)"', t) or \
+                    re.search(r'WM_NAME\(\w+\) = "(.*)"', t)
+                out.append({'id': wid, 'class': cm.group(1) if cm else '',
+                            'title': (tm.group(1) if tm else '')[:80]})
+        except Exception as e:
+            return [{'err': str(e)[:100]}] if not out else out
+        return out
+
+    def screensaver_active(self):
+        try:
+            return bool(self.dcall(self.session, 'org.gnome.ScreenSaver', '/org/gnome/ScreenSaver',
+                                   'org.gnome.ScreenSaver', 'GetActive')[0])
+        except Exception:
+            return None
+
+    @staticmethod
+    def consistency(mon, kconn, lid):
+        """Compare kernel's connector view with mutter's.  Returns list of issues."""
+        issues = []
+        if not mon or 'err' in mon:
+            return issues
+        mut = {m['c']: m for m in mon.get('monitors', [])}
+        in_layout = {c for l in mon.get('logical', []) for c in l['c']}
+        for c, k in kconn.items():
+            if k['status'] == 'connected' and c not in mut:
+                issues.append({'type': 'kernel-connected-not-in-mutter', 'c': c})
+        for c, m in mut.items():
+            k = kconn.get(c)
+            if k is None:
+                # kernel lists only non-disconnected connectors; only flag if sysfs node exists
+                if any(os.path.exists('/sys/class/drm/card%d-%s' % (i, c)) for i in range(4)):
+                    issues.append({'type': 'mutter-monitor-kernel-disconnected', 'c': c})
+                continue
+            if c not in in_layout:
+                if m['builtin'] and lid == 'closed':
+                    continue
+                if m['builtin'] and lid == 'open':
+                    issues.append({'type': 'edp-disabled-lid-open', 'c': c})
+                else:
+                    issues.append({'type': 'monitor-not-in-layout', 'c': c})
+            elif mon.get('psm') == 0 and k['enabled'] == 'disabled':
+                issues.append({'type': 'kernel-crtc-off-but-mutter-on', 'c': c,
+                               'dpms': k['dpms']})
+        return issues
+
+    def snapshot(self):
+        mon = self.mutter_state()
+        kconn = self.kernel_connectors()
+        lid = self.lid_state()
+        snap = {
+            'mon': mon,
+            'kconn': {c: '%s/%s/%s' % (v['status'], v['enabled'], v['dpms'])
+                      for c, v in sorted(kconn.items())},
+            'lid': lid,
+            'locked': self.screensaver_active(),
+            'ext': self.ext_state(),
+            'ws': self.workspaces(),
+            'shell': self.shell_proc(),
+            'psi': self.psi(),
+            'sticky': self.sticky_windows(),
+        }
+        snap['cons'] = self.consistency(mon, kconn, lid)
+        return snap
+
+    # ---------------- events / incidents ----------------
+    def event(self, etype, t=None, **details):
+        now = t or time.time()
+        eid = self.new_id()
+        inc = self.incidents.get(self.cur_inc) if self.cur_inc else None
+        if inc and not inc['done'] and now - inc['last_t'] <= INCIDENT_JOIN_S \
+                and now - inc['start_t'] <= INCIDENT_MAX_S:
+            inc['last_t'] = now
+            inc['events'].append(eid)
+            inc['types'].append(etype)
+        else:
+            inc = {'id': eid, 'start_t': now, 'last_t': now, 'events': [eid], 'types': [etype],
+                   'baseline': self.baseline, 'errs': collections.Counter(),
+                   'sev': collections.Counter(), 'exts': {}, 'timers': [], 'done': False,
+                   'last_snap_t': 0}
+            self.incidents[eid] = inc
+            self.cur_inc = eid
+        self.last_event = (eid, now, etype, inc['id'])
+        rec = {'kind': 'event', 'type': etype, 'event_id': eid, 'incident': inc['id'], 't': now}
+        rec.update(details)
+        self.store.write(rec)
+        # +0 snapshot (skip if one was taken <1 s ago in this incident)
+        if now - inc['last_snap_t'] >= 1.0:
+            self.take_snapshot(inc, '+0', eid)
+        for tid in inc['timers']:
+            GLib.source_remove(tid)
+        inc['timers'] = [
+            GLib.timeout_add(3000, self.guard(self._timer_snap, False), inc['id'], '+3'),
+            GLib.timeout_add(15000, self.guard(self._timer_snap, False), inc['id'], '+15'),
+        ]
+        return eid
+
+    def take_snapshot(self, inc, phase, after_eid=None):
+        snap = self.snapshot()
+        inc['last_snap_t'] = time.time()
+        rec = {'kind': 'snapshot', 'event_id': inc['id'] if inc else None, 'phase': phase}
+        if after_eid:
+            rec['after'] = after_eid
+        rec.update(snap)
+        self.store.write(rec)
+        if snap['mon'].get('layout') is not None:
+            self.prev_layout = snap['mon']
+        return snap
+
+    def _timer_snap(self, inc_id, phase):
+        inc = self.incidents.get(inc_id)
+        if not inc:
+            return False
+        if phase == '+3':
+            inc['timers'] = [t for t in inc['timers'][1:]]
+            self.take_snapshot(inc, '+3', inc['events'][-1])
+            return False
+        inc['timers'] = []
+        snap = self.take_snapshot(inc, '+15', inc['events'][-1])
+        self.check_anomalies(snap, inc['baseline'], inc)
+        inc['done'] = True
+        self.baseline = snap
+        self.flush_repeats(force=True)
+        if self.cur_inc == inc_id:
+            self.cur_inc = None
+        self.incidents.pop(inc_id, None)
+        return False
+
+    def anomaly_list(self, snap, base):
+        out = []
+        for issue in snap.get('cons', []):
+            out.append(('cons:%s:%s' % (issue['type'], issue['c']), issue['type'], issue))
+        ext = snap.get('ext', {})
+        if 'err' in ext:
+            out.append(('ext-unreachable', 'shell-unreachable', {'what': 'ListExtensions',
+                                                                  'err': ext['err']}))
+        for b in ext.get('bad', []):
+            typ = 'ext-error' if b['state'] in ('ERROR', 'OUT_OF_DATE') else 'ext-not-active'
+            # GNOME disables every extension lacking 'unlock-dialog' in its
+            # session-modes while locked: normal, not an anomaly.
+            if typ == 'ext-not-active' and snap.get('locked') and \
+                    'unlock-dialog' not in _session_modes(b['uuid']):
+                continue
+            out.append(('ext:%s:%s' % (b['uuid'], b['state']), typ, b))
+        for u in ext.get('missing', []):
+            out.append(('ext-missing:%s' % u, 'ext-enabled-not-installed', {'uuid': u}))
+        if ext.get('user_disabled'):
+            out.append(('user-disabled', 'extensions-globally-disabled', {}))
+        if 'err' in snap.get('mon', {}):
+            out.append(('mutter-unreachable', 'shell-unreachable',
+                        {'what': 'DisplayConfig', 'err': snap['mon']['err']}))
+        if base:
+            p0 = base.get('shell', {}).get('pid')
+            p1 = snap.get('shell', {}).get('pid')
+            if p0 and p1 and p0 != p1:
+                out.append(('pid:%s' % p1, 'shell-pid-changed', {'old': p0, 'new': p1}))
+        for w in snap.get('sticky', []):
+            if 'err' in w:
+                continue
+            out.append(('sticky:%s:%s' % (w['id'], w['class']), 'sticky-window', w))
+        psi = snap.get('psi', {})
+        if psi.get('some10', 0) > 30:
+            out.append(('psi', 'memory-pressure', psi))
+        return out
+
+    def check_anomalies(self, snap, base, inc=None, only_new=False):
+        base_keys = {k for k, _, _ in self.anomaly_list(base, None)} if base else set()
+        eid = inc['id'] if inc else None
+        for key, typ, detail in self.anomaly_list(snap, base):
+            new = key not in base_keys
+            if only_new and not new:
+                continue
+            rec = {'kind': 'anomaly', 'event_id': eid, 'type': typ, 'new': new, 'detail': detail}
+            if inc:
+                rec['events'] = inc['types']
+            self.store.write(rec)
+        if inc and inc['sev']['error']:
+            top = inc['errs'].most_common(6)
+            self.store.write({'kind': 'anomaly', 'event_id': eid, 'type': 'errors-after-event',
+                              'new': True, 'events': inc['types'],
+                              'detail': {'errors': inc['sev']['error'], 'warns': inc['sev']['warn'],
+                                         'top': [{'sig': s, 'n': n, 'ext': inc['exts'].get(s)}
+                                                 for s, n in top]}})
+
+    def periodic(self):
+        if self.incidents:          # an incident is settling; its +15 check covers this
+            return True
+        snap = self.snapshot()
+        rec = {'kind': 'snapshot', 'event_id': None, 'phase': 'periodic'}
+        rec.update(snap)
+        self.store.write(rec)
+        self.check_anomalies(snap, self.baseline, None, only_new=True)
+        self.baseline = snap
+        return True
+
+    # ---------------- D-Bus signal handlers ----------------
+    def on_screensaver(self, conn, sender, path, iface, sig, params):
+        active = bool(params.unpack()[0])
+        if active == self.ssaver_active:
+            return
+        self.ssaver_active = active
+        self.event('lock' if active else 'unlock', sender=sender)
+
+    def on_sleep(self, conn, sender, path, iface, sig, params):
+        start = bool(params.unpack()[0])
+        if sig == 'PrepareForSleep':
+            self.event('suspend' if start else 'resume')
+            if start:
+                self.save_cursor()
+        else:
+            self.event('shutdown' if start else 'shutdown-cancelled')
+            if start:
+                self.save_cursor()
+
+    def on_upower_props(self, conn, sender, path, iface, sig, params):
+        _, changed, _ = params.unpack()
+        if 'LidIsClosed' in changed:
+            closed = bool(changed['LidIsClosed'])
+            if closed != self.lid_closed:
+                self.lid_closed = closed
+                self.event('lid-close' if closed else 'lid-open')
+
+    def on_displayconfig_props(self, conn, sender, path, iface, sig, params):
+        _, changed, _ = params.unpack()
+        if 'PowerSaveMode' in changed:
+            mode = int(changed['PowerSaveMode'])
+            if mode != self.psm:
+                old, self.psm = self.psm, mode
+                self.event('dpms-on' if mode == 0 else 'dpms-off', mode=mode, old=old)
+
+    def on_monitors_changed(self, conn, sender, path, iface, sig, params):
+        prev = self.prev_layout or {}
+        cur = self.mutter_state()
+        diff = {}
+        if 'err' not in cur:
+            pc = {m['c']: m for m in prev.get('monitors', [])}
+            cc = {m['c']: m for m in cur.get('monitors', [])}
+            diff = {'added': sorted(set(cc) - set(pc)), 'removed': sorted(set(pc) - set(cc)),
+                    'mode': {c: [pc[c]['mode'], cc[c]['mode']] for c in set(pc) & set(cc)
+                             if pc[c]['mode'] != cc[c]['mode']}}
+            diff = {k: v for k, v in diff.items() if v}
+        self.event('monitors-changed', layout_before=prev.get('layout'),
+                   layout=cur.get('layout'), diff=diff, err=cur.get('err'))
+
+    def on_shell_owner(self, conn, sender, path, iface, sig, params):
+        name, old, new = params.unpack()
+        if name != 'org.gnome.Shell':
+            return
+        if old and new:
+            self.event('shell-restart', old_owner=old, new_owner=new)
+        elif new:
+            self.event('shell-appeared', owner=new)
+        else:
+            self.event('shell-gone', owner=old)
+
+    def on_ext_setting(self, settings, key):
+        val = settings.get_boolean(key)
+        self.event('ext-global-disable' if val else 'ext-global-enable')
+
+    # ---------------- udev ----------------
+    def on_uevent(self, client, action, dev):
+        sub = dev.get_subsystem()
+        name = dev.get_name()
+        item = {'s': sub, 'a': action, 'n': name}
+        if sub == 'drm':
+            for p in ('HOTPLUG', 'CONNECTOR', 'PROPERTY', 'LEASE'):
+                v = dev.get_property(p)
+                if v:
+                    item[p.lower()] = v
+        self.udev_pending.append(item)
+        if not self.udev_timer:
+            self.udev_timer = GLib.timeout_add(1500, self.guard(self.flush_udev, False))
+
+    def flush_udev(self):
+        self.udev_timer = 0
+        items, self.udev_pending = self.udev_pending, []
+        if not items:
+            return False
+        kconn = self.kernel_connectors()
+        prev = self.prev_kconn or {}
+        diff = {}
+        for c in sorted(set(prev) | set(kconn)):
+            a = prev.get(c, {}).get('status', 'disconnected')
+            b = kconn.get(c, {}).get('status', 'disconnected')
+            if a != b:
+                diff[c] = '%s->%s' % (a, b)
+        self.prev_kconn = kconn
+        uniq = collections.Counter(
+            '%s %s %s%s' % (i['s'], i['a'], i['n'],
+                            (' conn=%s' % i['connector']) if 'connector' in i else '')
+            for i in items)
+        summary = [k if n == 1 else '%s x%d' % (k, n) for k, n in uniq.most_common(25)]
+        self.event('hotplug', n=len(items), udev=summary, kconn_diff=diff,
+                   connected=sorted(c for c, v in kconn.items() if v['status'] == 'connected'))
+        return False
+
+    # ---------------- journal follower ----------------
+    def start_journal(self):
+        cmd = ['journalctl', '-f', '-o', 'json', '--no-pager']
+        cur = None
+        try:
+            if time.time() - os.path.getmtime(self.cursor_path) < 2 * 86400:
+                with open(self.cursor_path) as f:
+                    cur = f.read().strip()
+        except OSError:
+            pass
+        if cur:
+            cmd.append('--after-cursor=' + cur)
+        else:
+            cmd += ['-n', '0']
+        cmd += ['_TRANSPORT=kernel', '+',
+                '_COMM=gnome-shell', '_COMM=gjs', '_COMM=gnome-session-b', '_COMM=Xwayland', '+',
+                'SYSLOG_IDENTIFIER=gnome-shell', '+',
+                'SYSLOG_IDENTIFIER=systemd-coredump']
+        for unit in SHELL_UNITS:
+            cmd += ['+', 'USER_UNIT=' + unit, '+', 'UNIT=' + unit]
+        self.jproc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      stdin=subprocess.DEVNULL, bufsize=0,
+                                      preexec_fn=_set_pdeathsig)
+        fd = self.jproc.stdout.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        self.jbuf = b''
+        GLib.io_add_watch(fd, GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
+                          self.guard(self.on_journal_io, True))
+        self.store.write({'kind': 'daemon', 'what': 'journal-follow',
+                          'resume_cursor': bool(cur), 'pid': self.jproc.pid})
+        return False
+
+    def on_journal_io(self, fd, cond):
+        eof = False
+        while True:
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                break
+            if not chunk:
+                eof = True
+                break
+            self.jbuf += chunk
+            if len(self.jbuf) > 4 * 1024 * 1024 and b'\n' not in self.jbuf:
+                self.jbuf = b''
+        if b'\n' in self.jbuf:
+            *lines, self.jbuf = self.jbuf.split(b'\n')
+            for ln in lines:
+                if ln.strip():
+                    try:
+                        self.handle_journal_line(ln)
+                    except Exception as e:
+                        self.self_error('handle_journal_line', e)
+        if eof or (cond & (GLib.IO_HUP | GLib.IO_ERR) and not (cond & GLib.IO_IN)):
+            rc = self.jproc.poll() if self.jproc else None
+            self.store.write({'kind': 'self-error', 'where': 'journal',
+                              'err': 'journalctl exited rc=%s; restarting in 10s' % rc})
+            try:
+                self.jproc.kill()
+                self.jproc.wait(2)
+            except Exception:
+                pass
+            GLib.timeout_add_seconds(10, self.guard(self.start_journal, False))
+            return False
+        return True
+
+    def handle_journal_line(self, ln):
+        d = json.loads(ln)
+        self.cursor = d.get('__CURSOR') or self.cursor
+        c = classify(d, self.known_uuids, self.my_uid)
+        if not c:
+            return
+        try:
+            t = int(d.get('__REALTIME_TIMESTAMP')) / 1e6
+        except Exception:
+            t = time.time()
+        catchup = t < self.start_t - 1
+        if c['sev'] == 'selftest':
+            self.store.write({'kind': 'selftest', 't': t, 'msg': c['msg'], 'src_ident':
+                              d.get('SYSLOG_IDENTIFIER'), 'classified_as': c})
+            return
+        sig = c['sig']
+        st = self.err_state.get(sig)
+        attrib = {}
+        if self.last_event and not catchup:
+            eid, et, etype, inc_id = self.last_event
+            if 0 <= t - et <= ERR_ATTRIB_S:
+                attrib = {'event_id': inc_id, 'after': etype, 'dt': round(t - et, 1)}
+                inc = self.incidents.get(inc_id)
+                if inc and not inc['done'] and c['sev'] in ('error', 'warn'):
+                    inc['errs'][sig] += 1
+                    inc['sev'][c['sev']] += 1
+                    if c['ext']:
+                        inc['exts'][sig] = c['ext']
+        if st is None or t - st['last_seen'] > 60:
+            rec = {'kind': 'error', 't': t}
+            rec.update(c)
+            rec.update(attrib)
+            if catchup:
+                rec['catchup'] = True
+            self.store.write(rec)
+            self.err_state[sig] = {'last_seen': t, 'pending': 0, 'first': None, 'last': None,
+                                   'sev': c['sev'], 'ext': c['ext'], 'src': c['src'],
+                                   'attrib': None}
+        else:
+            st['last_seen'] = t
+            if st['pending'] == 0:
+                st['first'] = t
+                st['attrib'] = attrib or None
+            st['pending'] += 1
+            st['last'] = t
+
+    def flush_repeats(self, force=False):
+        now = time.time()
+        recent_event = self.last_event and now - self.last_event[1] < 45
+        interval = 5 if recent_event else 300
+        for sig, st in list(self.err_state.items()):
+            if st['pending'] and (force or now - st['first'] >= interval):
+                rec = {'kind': 'error', 't': st['first'], 'repeat': True, 'count': st['pending'],
+                       't_last': round(st['last'], 3), 'sig': sig, 'sev': st['sev'],
+                       'src': st['src'], 'ext': st['ext']}
+                if st['attrib']:
+                    rec.update(st['attrib'])
+                self.store.write(rec)
+                st['pending'] = 0
+            elif not st['pending'] and now - st['last_seen'] > 3600:
+                del self.err_state[sig]
+        return True
+
+    def save_cursor(self):
+        if self.cursor and self.cursor != self.cursor_saved:
+            tmp = self.cursor_path + '.tmp'
+            with open(tmp, 'w') as f:
+                f.write(self.cursor)
+            os.replace(tmp, self.cursor_path)
+            self.cursor_saved = self.cursor
+        return True
+
+    # ---------------- lifecycle ----------------
+    def subscribe(self):
+        g = self.guard
+        try:
+            self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        except Exception as e:
+            self.self_error('session-bus', e)
+        try:
+            self.system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        except Exception as e:
+            self.self_error('system-bus', e)
+        F = Gio.DBusSignalFlags.NONE
+        s = self.session
+        if s:
+            # sender=None: sender-agnostic, so a replaced shell (or a test emitter) still matches
+            s.signal_subscribe(None, 'org.gnome.ScreenSaver', 'ActiveChanged',
+                               '/org/gnome/ScreenSaver', None, F, g(self.on_screensaver))
+            s.signal_subscribe(None, 'org.gnome.Mutter.DisplayConfig', 'MonitorsChanged',
+                               '/org/gnome/Mutter/DisplayConfig', None, F,
+                               g(self.on_monitors_changed))
+            s.signal_subscribe(None, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
+                               '/org/gnome/Mutter/DisplayConfig', 'org.gnome.Mutter.DisplayConfig',
+                               F, g(self.on_displayconfig_props))
+            s.signal_subscribe('org.freedesktop.DBus', 'org.freedesktop.DBus', 'NameOwnerChanged',
+                               '/org/freedesktop/DBus', 'org.gnome.Shell', F,
+                               g(self.on_shell_owner))
+        if self.system:
+            for m in ('PrepareForSleep', 'PrepareForShutdown'):
+                self.system.signal_subscribe('org.freedesktop.login1',
+                                             'org.freedesktop.login1.Manager', m,
+                                             '/org/freedesktop/login1', None, F, g(self.on_sleep))
+            self.system.signal_subscribe(None, 'org.freedesktop.DBus.Properties',
+                                         'PropertiesChanged', '/org/freedesktop/UPower',
+                                         'org.freedesktop.UPower', F, g(self.on_upower_props))
+        try:
+            self.shell_settings = Gio.Settings.new('org.gnome.shell')
+            self.shell_settings.get_boolean('disable-user-extensions')  # arm change notifications
+            self.shell_settings.connect('changed::disable-user-extensions', g(self.on_ext_setting))
+        except Exception as e:
+            self.self_error('gsettings', e)
+        if not self.args.no_udev:
+            if GUdev is not None:
+                self.udev = GUdev.Client.new(['drm', 'thunderbolt', 'typec'])
+                self.udev.connect('uevent', g(self.on_uevent))
+            else:
+                self.self_error('udev', RuntimeError('GUdev typelib missing; udev events disabled'))
+
+    def initial_state(self):
+        self.psm = self.mutter_state().get('psm')
+        self.ssaver_active = self.screensaver_active()
+        lid = self.lid_state()
+        self.lid_closed = None if lid is None else (lid == 'closed')
+        self.prev_kconn = self.kernel_connectors()
+
+    def stop(self, *a):
+        try:
+            self.flush_repeats(force=True)
+            self.save_cursor()
+            self.store.write({'kind': 'daemon-stop', 'uptime_s': int(time.time() - self.start_t)})
+        except Exception:
+            pass
+        try:
+            if self.jproc:
+                self.jproc.terminate()
+        except Exception:
+            pass
+        self.loop.quit()
+        return False
+
+    def run(self):
+        prev = self.store.last_record()
+        self.subscribe()
+        self.initial_state()
+        try:
+            with open('/proc/sys/kernel/random/boot_id') as f:
+                boot_id = f.read().strip()
+            with open('/proc/uptime') as f:
+                uptime = int(float(f.read().split()[0]))
+        except Exception:
+            boot_id, uptime = None, None
+        shell = self.shell_proc()
+        prev_unclean = bool(prev) and prev.get('kind') != 'daemon-stop'
+        self.event('session-start', pid=os.getpid(), boot_id=boot_id, uptime_s=uptime,
+                   login=bool(shell.get('age_s') is not None and shell['age_s'] < 300),
+                   shell_age_s=shell.get('age_s'), session_id=os.environ.get('XDG_SESSION_ID'),
+                   prev_unclean=prev_unclean,
+                   prev_boot_same=(prev or {}).get('boot_id') == boot_id if prev and
+                   prev.get('kind') == 'event' else None)
+        if not self.args.no_journal:
+            self.guard(self.start_journal)()
+            GLib.timeout_add_seconds(10, self.guard(self.save_cursor, True))
+        GLib.timeout_add_seconds(5, self.guard(self.flush_repeats, True))
+        GLib.timeout_add_seconds(self.args.period, self.guard(self.periodic, True))
+        try:
+            gi.require_version('GLibUnix', '2.0')
+            from gi.repository import GLibUnix
+            add_sig = GLibUnix.signal_add
+        except Exception:
+            add_sig = GLib.unix_signal_add
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            add_sig(GLib.PRIORITY_HIGH, sig, self.stop)
+        self.loop.run()
+
+
+# --------------------------------------------------------------------------
+# self test of the classifier
+# --------------------------------------------------------------------------
+def selftest():
+    known = {'workspace-manage@zihan.local', 'ubuntu-dock@ubuntu.com', 'ding@rastersoft.com',
+             'maximize-own-workspace@zihan.local'}
+    U = '1000'
+
+    def j(msg, prio=4, comm='gnome-shell', ident='gnome-shell', transport='journal', **kw):
+        d = {'MESSAGE': msg, 'PRIORITY': str(prio), '_COMM': comm,
+             'SYSLOG_IDENTIFIER': ident, '_TRANSPORT': transport, '_UID': U}
+        d.update(kw)
+        return d
+
+    cases = [
+        ('JS ERROR + stack -> ext', j('JS ERROR: TypeError: this._foo is null\n'
+           '_onChange@file:///usr/share/gnome-shell/extensions/'
+           'workspace-manage@zihan.local/cross.js:120:9\n@resource:///org/gnome/shell/ui/init.js:21:20',
+           prio=3), dict(sev='error', ext='workspace-manage@zihan.local', src='shell')),
+        ('already disposed (prio 4) -> error', j(
+            'Object Gjs_status_system_PowerToggle (0x5f82dd770db0), has been already disposed '
+            '— impossible to set any property on it.\n== Stack trace for context 0x5f82 ==\n'
+            '#0   5f82d i   resource:///org/gnome/shell/ui/status/system.js:85 (abc @ 12)'),
+         dict(sev='error', ext=None)),
+        ('assertion -> error', j("meta_display_get_monitor_in_fullscreen: assertion 'monitor >= 0 "
+                                 "&& monitor < n_logical_monitors' failed"), dict(sev='error')),
+        ('stage views -> warn', j("Can't update stage views actor unnamed [ClutterActor] is on "
+                                  "because it needs an allocation."), dict(sev='warn')),
+        ('Gjs_ type -> ubuntu-dock', j('st_widget_get_theme_node called on the widget [0x55d1 '
+                                       'Gjs_ubuntu-dock_ubuntu_com_docking_DashToDock.left] which '
+                                       'is not in the stage.'), dict(ext='ubuntu-dock@ubuntu.com')),
+        ('DING prefix -> ding ext', j('DING: (org.gnome.Nautilus:123): Tracker-CRITICAL **: 1:2:3: x',
+                                      prio=5), dict(sev='error', ext='ding@rastersoft.com')),
+        ('ident uuid', j('9riTCV3ZrU, Impossible to lookup icon for x', ident='ubuntu-appindicators@ubuntu.com'),
+         dict(ext='ubuntu-appindicators@ubuntu.com', sev='warn')),
+        ('info line dropped', j('example-tool: workspace added at 2', prio=5), None),
+        ('gdm shell dropped', dict(j('JS ERROR: x', prio=3), _UID='120'), None),
+        ('kernel drm error', j('i915 0000:00:02.0: [drm] *ERROR* flip_done timed out', prio=3,
+                               comm=None, ident='kernel', transport='kernel'),
+         dict(src='kernel', sev='error')),
+        ('kernel link training (prio 6) -> error', j('i915 0000:00:02.0: [drm] DP-8 Link Training failed',
+                                                    prio=6, comm=None, ident='kernel', transport='kernel'),
+         dict(sev='error')),
+        ('kernel tb info', j('thunderbolt 0-1: device disconnected', prio=6, comm=None,
+                             ident='kernel', transport='kernel'), dict(sev='info')),
+        ('kauditd dropped', j('kauditd_printk_skb: 12 callbacks suppressed', prio=4, comm=None,
+                              ident='kernel', transport='kernel'), None),
+        ('unrelated kernel info dropped', j('wlp0s20f3: associated', prio=6, comm=None,
+                                            ident='kernel', transport='kernel'), None),
+        ('coredump', j('Process 1234 (gnome-shell) of user 1000 dumped core.', prio=2, comm='systemd-coredum',
+                       ident='systemd-coredump'), dict(src='coredump', sev='error')),
+        ('shell unit SIGKILL', j('org.gnome.Shell@wayland.service: Main process exited, code=killed, '
+                                 'status=9/KILL', prio=5, comm='systemd', ident='systemd',
+                                 USER_UNIT='org.gnome.Shell@wayland.service'),
+         dict(src='shell-unit', sev='error')),
+        ('selftest marker', j('JS ERROR: %s probe' % SELFTEST_MARK, prio=3, comm='logger'),
+         dict(sev='selftest')),
+        ('byte-array message', dict(j('x'), MESSAGE=list(b'JS ERROR: bytes msg')), dict(sev='error')),
+    ]
+    ok = True
+    for name, d, want in cases:
+        got = classify(d, known, U)
+        if want is None:
+            passed = got is None
+        else:
+            passed = got is not None and all(got.get(k) == v for k, v in want.items())
+        ok &= passed
+        print('%s  %-40s %s' % ('PASS' if passed else 'FAIL', name,
+                                '' if passed else 'got=%r' % (got and {k: got.get(k) for k in
+                                                                       ('src', 'sev', 'ext', 'sig')})))
+    a = classify(j('Window W591 (Desktop Icons 3) cannot be minimized'), known, U)['sig']
+    b = classify(j('Window W1042 (Desktop Icons 2) cannot be minimized'), known, U)['sig']
+    passed = a == b
+    ok &= passed
+    print('%s  %-40s %s' % ('PASS' if passed else 'FAIL', 'signature normalizes numbers', a))
+    a = classify(j('Object Gjs_X (0x5f82dd770db0), has been already disposed\n#0 1 i resource:///'
+                   'org/gnome/shell/ui/status/system.js:85'), known, U)['sig']
+    print('      example signature: %s' % a)
+    return 0 if ok else 1
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--state-dir', default=os.environ.get(
+        'DESKTOP_BLACKBOX_DIR', os.path.join(STATE_HOME, 'desktop-blackbox')))
+    ap.add_argument('--no-journal', action='store_true', help='do not follow the journal')
+    ap.add_argument('--no-udev', action='store_true', help='do not listen to udev')
+    ap.add_argument('--period', type=int, default=PERIODIC_S,
+                    help='periodic snapshot interval (s)')
+    ap.add_argument('--selftest', action='store_true', help='run classifier self test and exit')
+    ap.add_argument('--snapshot', action='store_true', help='print one snapshot and exit')
+    args = ap.parse_args()
+    if args.selftest:
+        sys.exit(selftest())
+    if args.snapshot:
+        d = Daemon.__new__(Daemon)
+        d.known_uuids = set()
+        d.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        print(json.dumps(d.snapshot(), indent=1, default=str))
+        return
+    os.makedirs(args.state_dir, exist_ok=True)
+    lock = open(os.path.join(args.state_dir, '.lock'), 'w')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print('another desktop-blackbox is running on %s' % args.state_dir, file=sys.stderr)
+        sys.exit(0)
+    Daemon(args).run()
+
+
+if __name__ == '__main__':
+    main()

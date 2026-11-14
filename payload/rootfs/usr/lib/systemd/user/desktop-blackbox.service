@@ -1,0 +1,19 @@
+[Unit]
+Description=Stability Guard: desktop black-box logger (lock/unlock, displays, suspend, shell errors)
+Documentation=file:///usr/local/bin/desktop-blackbox
+PartOf=graphical-session.target
+After=graphical-session.target
+# Not for the login-screen (gdm) or other system users.
+ConditionUser=!@system
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/desktop-blackbox
+Restart=on-failure
+RestartSec=5
+MemoryMax=150M
+Nice=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=graphical-session.target

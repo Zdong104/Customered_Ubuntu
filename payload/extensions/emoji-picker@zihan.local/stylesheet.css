@@ -1,0 +1,167 @@
+/* Emoji Picker — macOS look, matching the fcitx5 mac-light / mac-dark themes.
+ * Light by default; .ep-dark is added to .ep-panel when
+ * org.gnome.desktop.interface color-scheme is prefer-dark.
+ * Sizes: .ep-cell 38px (CELL in picker.js), 9 columns, .ep-scroll = 6 rows. */
+
+.ep-backdrop {
+  background-color: transparent;
+}
+
+.ep-panel {
+  width: 356px;  /* grid 9 x 38 = 342 + 1px padding + overlay-scrollbar gutter */
+  padding: 10px 8px 6px 8px;
+  spacing: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  background-color: #fafafa;
+  color: #1d1d1f;
+  box-shadow: 0 10px 30px 0 rgba(0, 0, 0, 0.22);
+  font-size: 13px;
+}
+
+.ep-panel.ep-dark {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background-color: #28282a;
+  color: #f5f5f7;
+  box-shadow: 0 10px 30px 0 rgba(0, 0, 0, 0.55);
+}
+
+/* ---- search ---- */
+.ep-panel .ep-search,
+.ep-panel .ep-search:hover,
+.ep-panel .ep-search:focus {
+  min-height: 0;
+  margin: 0 2px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  background-color: rgba(0, 0, 0, 0.06);
+  color: #1d1d1f;
+  caret-color: #0a84ff;
+  selection-background-color: rgba(10, 132, 255, 0.30);
+  selected-color: #1d1d1f;
+  font-size: 13px;
+}
+.ep-panel.ep-dark .ep-search,
+.ep-panel.ep-dark .ep-search:hover,
+.ep-panel.ep-dark .ep-search:focus {
+  background-color: rgba(255, 255, 255, 0.09);
+  color: #f5f5f7;
+  selected-color: #f5f5f7;
+}
+.ep-panel .ep-search .hint-text { color: rgba(0, 0, 0, 0.38); }
+.ep-panel.ep-dark .ep-search .hint-text { color: rgba(255, 255, 255, 0.40); }
+.ep-panel .ep-search-icon {
+  icon-size: 14px;
+  padding-right: 6px;
+  color: rgba(0, 0, 0, 0.40);
+}
+.ep-panel.ep-dark .ep-search-icon { color: rgba(255, 255, 255, 0.45); }
+
+/* ---- section header ---- */
+.ep-header {
+  padding: 2px 6px 0 6px;
+  spacing: 12px;
+}
+.ep-section-title {
+  font-size: 11px;
+  font-weight: bold;
+  color: rgba(0, 0, 0, 0.50);
+}
+.ep-selected-name {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+}
+.ep-dark .ep-section-title { color: rgba(255, 255, 255, 0.55); }
+.ep-dark .ep-selected-name { color: rgba(255, 255, 255, 0.50); }
+
+/* ---- grid ---- */
+.ep-scroll {
+  height: 228px;  /* 6 rows x 38px */
+}
+.ep-grid { padding: 0 1px; }
+
+.ep-row { border-radius: 9px; }
+.ep-row.ep-row-active { background-color: rgba(10, 132, 255, 0.08); }
+.ep-dark .ep-row.ep-row-active { background-color: rgba(10, 132, 255, 0.16); }
+
+.ep-cell,
+.ep-cell:hover,
+.ep-cell:active {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  background-color: transparent;
+}
+.ep-cell:selected,
+.ep-cell:selected:hover {
+  background-color: #0a84ff;
+}
+
+.ep-emoji {
+  font-family: emoji, "Noto Color Emoji", sans-serif;  /* fontconfig emoji alias */
+  font-size: 24px;
+}
+
+/* 1..9 badge in the active row's cells */
+.ep-hint {
+  margin: 0 1px 1px 0;
+  padding: 0 3px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: bold;
+  color: rgba(0, 0, 0, 0.55);
+  background-color: rgba(250, 250, 250, 0.92);
+}
+.ep-dark .ep-hint {
+  color: rgba(255, 255, 255, 0.70);
+  background-color: rgba(40, 40, 42, 0.92);
+}
+.ep-cell:selected .ep-hint {
+  color: #ffffff;
+  background-color: #0a84ff;
+}
+
+.ep-empty {
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.40);
+}
+.ep-dark .ep-empty { color: rgba(255, 255, 255, 0.45); }
+
+/* ---- category tabs (bottom, like macOS) ---- */
+.ep-tabs {
+  padding-top: 5px;
+  spacing: 2px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+.ep-dark .ep-tabs { border-top: 1px solid rgba(255, 255, 255, 0.08); }
+
+.ep-tab,
+.ep-tab:hover {
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  box-shadow: none;
+  background-color: transparent;
+  color: rgba(0, 0, 0, 0.42);
+}
+.ep-tab:hover { color: rgba(0, 0, 0, 0.70); }
+.ep-tab:checked,
+.ep-tab:checked:hover {
+  color: #0a84ff;
+  background-color: rgba(10, 132, 255, 0.12);
+}
+.ep-dark .ep-tab { color: rgba(255, 255, 255, 0.45); }
+.ep-dark .ep-tab:hover { color: rgba(255, 255, 255, 0.75); }
+.ep-dark .ep-tab:checked,
+.ep-dark .ep-tab:checked:hover {
+  color: #0a84ff;
+  background-color: rgba(10, 132, 255, 0.20);
+}
+.ep-tab-icon { icon-size: 16px; }

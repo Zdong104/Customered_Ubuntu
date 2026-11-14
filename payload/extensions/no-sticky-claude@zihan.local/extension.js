@@ -29,10 +29,24 @@ const WM_CLASSES = new Set([
     'claude-desktop', 'Claude-desktop', 'Claude',
 ]);
 
-function isClaude(window) {
-    return window.get_window_type() === Meta.WindowType.NORMAL &&
-        !window.skip_taskbar &&
-        WM_CLASSES.has(window.get_wm_class());
+// Chromium/Electron apps on XWayland can re-assert _NET_WM_STATE_STICKY by
+// themselves (seen 2026-11-10: a Google Docs Chrome window on every workspace).
+const PREFIXES = ['google-chrome', 'chromium', 'crx_', 'microsoft-edge'];
+const EXACT = new Set([
+    'code', 'cursor', 'obsidian', 'wechat', 'slack', 'discord',
+]);
+
+function isTarget(window) {
+    if (window.get_window_type() !== Meta.WindowType.NORMAL ||
+        window.skip_taskbar)
+        return false;
+    const cls = window.get_wm_class();
+    if (!cls)
+        return false;
+    if (WM_CLASSES.has(cls))
+        return true;
+    const lc = cls.toLowerCase();
+    return EXACT.has(lc) || PREFIXES.some(p => lc.startsWith(p));
 }
 
 export default class NoStickyClaudeExtension extends Extension {
@@ -98,13 +112,13 @@ export default class NoStickyClaudeExtension extends Extension {
     }
 
     _check(window) {
-        if (!this._mutter || !window.get_compositor_private() || !isClaude(window) ||
+        if (!this._mutter || !window.get_compositor_private() || !isTarget(window) ||
             !window.is_on_all_workspaces())
             return;
         const onlyPrimary = this._mutter.get_boolean('workspaces-only-on-primary');
         if (onlyPrimary && !window.is_on_primary_monitor())
             return;
-        console.log(`no-sticky-claude: unsticking "${window.get_title()}"`);
+        console.log('no-sticky: unstuck ' + window.get_wm_class() + ' "' + window.get_title() + '"');
         window.unstick();
     }
 

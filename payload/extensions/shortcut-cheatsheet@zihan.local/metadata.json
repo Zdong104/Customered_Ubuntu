@@ -1,0 +1,7 @@
+{
+  "uuid": "shortcut-cheatsheet@zihan.local",
+  "name": "Shortcut Cheatsheet",
+  "description": "macOS-style shortcut cheatsheet. Hold Super alone for ~0.8 s and an overlay lists useful shortcuts; let go and it disappears (and the Overview does not open). A quick Super tap still opens the Overview, and Super+<key> cancels the sheet and runs that shortcut. The list lives in ~/.config/shortcut-cheatsheet/shortcuts.json (created with defaults on first use, re-read every time the sheet is shown).",
+  "shell-version": ["50"],
+  "version": 1
+}

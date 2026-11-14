@@ -57,6 +57,13 @@
  * is an exit instead: split.js drops the pair and its isolation records, so
  * both stay put as normal windows on what is now an ordinary shared
  * workspace; nothing here sends the host home (it has no record left).
+ *
+ * Lock screen (session-modes includes unlock-dialog, 2026-11-09): the
+ * extension stays enabled while locked, so its snapshot, records and pairs
+ * live on and a dock/undock made while locked is settled (_collect /
+ * _reconcile) together with workspace-manage's undock regroup, out of sight.
+ * Window changes are not acted on while locked: the sweep keeps the pre-lock
+ * snapshot and the sweep at unlock sees them as the changes they are.
  */
 
 import Clutter from 'gi://Clutter';
@@ -64,7 +71,8 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {WorkspaceGroup} from 'resource:///org/gnome/shell/ui/workspaceAnimation.js';
 import {ExtensionState} from 'resource:///org/gnome/shell/misc/extensionUtils.js';
 
 import {SplitView, isPaired, stampMaxOn} from './split.js';
@@ -121,7 +129,41 @@ const SPLIT_VIEW = true;
  */
 const EXEMPT_APPS = new Set(['vocalinux', 'wl-clipboard']);
 
+/**
+ * DING (ding@rastersoft.com) desktop windows, "Desktop Icons N": maximized,
+ * NORMAL and not skip-taskbar until DING's shell code sees them map and makes
+ * them DESKTOP windows. Before that they look like any maximized window, and
+ * on 2026-11-11 10:50 (docking) _reconcile split them onto virtual workspaces
+ * of their own; islands minimized the ones off screen before their first map,
+ * so DING never placed them and the desktop icons vanished. Recognised from
+ * the owning process (known at once) or DING's marker.
+ */
+const DING_SCRIPT = 'ding@rastersoft.com/app/ding.js';
+const _dingWindows = new WeakMap();
+
+function isDingWindow(window) {
+    if (window.customJS_ding)
+        return true;
+    const known = _dingWindows.get(window);
+    if (known !== undefined)
+        return known;
+    const pid = window.get_pid?.() ?? -1;
+    if (!(pid > 0))
+        return false; // not known yet: ask again later
+    let ding = false;
+    try {
+        const [ok, bytes] = GLib.file_get_contents(`/proc/${pid}/cmdline`);
+        ding = ok && new TextDecoder().decode(bytes).includes(DING_SCRIPT);
+    } catch (e) {
+        ding = false;
+    }
+    _dingWindows.set(window, ding);
+    return ding;
+}
+
 function isExempt(window) {
+    if (isDingWindow(window))
+        return true;
     const cls = window.get_wm_class() ?? window.get_gtk_application_id();
     const key = cls ?? window.get_title() ?? '';
     return EXEMPT_APPS.has(key.toLowerCase());
@@ -177,6 +219,68 @@ function sameLoc(a, b) {
     return true;
 }
 
+const BUTTON_MASKS = Clutter.ModifierType.BUTTON1_MASK |
+    Clutter.ModifierType.BUTTON2_MASK | Clutter.ModifierType.BUTTON3_MASK |
+    Clutter.ModifierType.BUTTON4_MASK | Clutter.ModifierType.BUTTON5_MASK;
+
+/**
+ * Mutter 50 aborts the shell (clutter-sprite.c:718, the assertion in
+ * clutter_sprite_notify_grab) when the stage grabs itself while a stale
+ * implicit grab is held. That happens when a press starts while a Wayland
+ * popup grab is up (the press's event chain is then only that grab's "input
+ * only grab actor"), the client closes the popup on that press (GTK4 does),
+ * which destroys the actor, and the stage is grabbed before the button comes
+ * up: Main.pushModal(global.stage) from an animated workspace switch (an app
+ * activating a window on another workspace) or the overview. Crashed
+ * 2026-11-13 13:54 when Files opened a link in Chrome; upstream
+ * mutter#5121, open. The stage-on-stage path keeps the implicit grab
+ * and asserts nothing was dropped from it, and it can never contain an
+ * actor that has left the stage.
+ *
+ * A grab on any other actor takes the other path, which cancels the
+ * implicit grab cleanly. So, only for a stage grab with no grab active and a
+ * button down, first grab and drop a throwaway actor. The held click is
+ * cancelled, as a modal on any other actor would cancel it. Otherwise
+ * nothing changes.
+ */
+function flushImplicitGrab(stage, grab) {
+    const sink = new Clutter.Actor({name: 'maximize-own implicit-grab flush'});
+    stage.insert_child_at_index(sink, 0);
+    try {
+        grab.call(stage, sink).dismiss();
+    } finally {
+        sink.destroy();
+    }
+}
+
+/**
+ * Islands' moveWindowTo(), minus its side effect on the app rule. Islands
+ * takes every move as the user saying where the app belongs and files the
+ * app's windows there from then on (indexForApp), keyed by WM class, so one
+ * key for every Chrome window and PWA. Our moves say nothing of the kind;
+ * they kept pointing "google-chrome" at whatever group the last split made,
+ * where islands then dropped a Chrome window that re-entered the monitor
+ * mid-drag (2026-11-09: Teams jumped to another page on a drag-unmaximize).
+ */
+function islandsMove(state, window, index) {
+    const rules = state._appRules;
+    const key = window.get_wm_class()?.toLowerCase() ?? null;
+    const keep = rules instanceof Map && !!key;
+    const had = keep && rules.has(key);
+    const old = had ? rules.get(key) : undefined;
+    const moved = state.moveWindowTo(window, index);
+    if (keep && state._appRules === rules) {
+        if (had)
+            rules.set(key, old);
+        else
+            rules.delete(key);
+    }
+    return moved;
+}
+
+/** Re-entries this long after a grab ended still count as part of the drag. */
+const DRAG_GRACE_MS = 1500;
+
 /** Stable key for a real workspace; index() asserts once it is removed. */
 const workspaceIds = new WeakMap();
 let nextWorkspaceId = 0;
@@ -213,6 +317,7 @@ export default class MaximizeOwnWorkspace extends Extension {
         this._signals = [];
         this._busy = false;
         this._grab = null; // {window, op, since} from grab-op-begin; see _grabbing
+        this._dragged = null; // {window, until}: the last grab's window; _keepDragged
         this._laterId = 0;
         this._settleId = 0;
         this._layoutChanging = false;
@@ -228,11 +333,17 @@ export default class MaximizeOwnWorkspace extends Extension {
             this._trackWindow(window);
             this._schedule();
         });
-        this._connect(global.display, 'window-entered-monitor', () => this._schedule());
+        this._connect(global.display, 'window-entered-monitor', (_d, _m, window) => {
+            this._keepDragged(window);
+            this._schedule();
+        });
         this._connect(global.display, 'grab-op-begin', (_d, window, op) => {
             this._grab = {window, op, since: GLib.get_monotonic_time()};
         });
-        this._connect(global.display, 'grab-op-end', () => {
+        this._connect(global.display, 'grab-op-end', (_d, window) => {
+            const held = this._grab?.window ?? window;
+            if (held)
+                this._dragged = {window: held, until: GLib.get_monotonic_time() + DRAG_GRACE_MS * 1000};
             this._grab = null;
             this._schedule();
         });
@@ -242,6 +353,8 @@ export default class MaximizeOwnWorkspace extends Extension {
         this._connect(Main.layoutManager, 'monitors-changed', () => this._layoutChanged());
         // Leaving an emptied tagged workspace lets _collect drop it.
         this._connect(global.workspace_manager, 'active-workspace-changed', () => this._schedule());
+        this._locked = Main.sessionMode.isLocked;
+        this._connect(Main.sessionMode, 'updated', () => this._sessionUpdated());
 
         for (const actor of global.get_window_actors()) {
             if (actor.meta_window)
@@ -253,11 +366,52 @@ export default class MaximizeOwnWorkspace extends Extension {
         // screen locked) was never seen as a change. Reconcile once the
         // layout has been quiet for SETTLE_MS; islands, enabled after us,
         // restarts that wait through its registry change.
+        // Stock WorkspaceGroup._syncStacking throws "record is undefined" when a
+        // window becomes eligible mid-switch (new window, move, stick/unstick,
+        // or our own maximize moves during the 250 ms animation), aborting the
+        // stacking loop. Same code, but skip actors that have no record yet.
+        this._injections = new InjectionManager();
+        this._injections.overrideMethod(WorkspaceGroup.prototype, '_syncStacking',
+            () => function () {
+                const windowActors = global.get_window_actors().filter(w =>
+                    this._shouldShowWindow(w.meta_window));
+
+                let lastRecord;
+                const bottomActor = this._background ?? null;
+
+                for (const windowActor of windowActors) {
+                    const record = this._windowRecords.find(r => r.windowActor === windowActor);
+                    if (!record)
+                        continue;
+
+                    this.set_child_above_sibling(record.clone,
+                        lastRecord ? lastRecord.clone : bottomActor);
+                    lastRecord = record;
+                }
+            });
+        // Main.pushModal(global.stage) with a button down can abort the
+        // shell; see flushImplicitGrab.
+        this._injections.overrideMethod(Clutter.Stage.prototype, 'grab',
+            grab => function (actor) {
+                if (actor === this && !this.get_grab_actor() &&
+                    (global.get_pointer()[2] & BUTTON_MASKS)) {
+                    try {
+                        flushImplicitGrab(this, grab);
+                        console.log('maximize-own-workspace: stage grab with a button down, implicit grab flushed first');
+                    } catch (e) {
+                        console.warn(`maximize-own-workspace: implicit-grab flush failed: ${e}`);
+                    }
+                }
+                return grab.call(this, actor);
+            });
+
         this._layoutChanged();
         console.log('maximize-own-workspace: enabled');
     }
 
     disable() {
+        this._injections?.clear();
+        this._injections = null;
         this._split?.disable();
         this._split = null;
         if (this._laterId) {
@@ -285,10 +439,58 @@ export default class MaximizeOwnWorkspace extends Extension {
         this._snapshot.clear();
         this._dying.clear();
         this._gone = [];
+        this._grab = null;
+        this._dragged = null;
     }
 
     _connect(object, signal, callback) {
         this._signals.push([object, object.connect(signal, callback)]);
+    }
+
+    /**
+     * A window being dragged (or just let go) entered a secondary monitor.
+     * Islands files it by its app rule there (trustPlacement is off for
+     * drags, the rule is not), so a drag-unmaximize whose window touched
+     * another monitor for a frame (Mutter's restore rect) came back onto
+     * another virtual workspace, hidden, and the view could follow it.
+     * Islands' own intent is "a dragged window belongs to that monitor's
+     * active virtual workspace": hold it to that, synchronously, right after
+     * islands' handler (it is enabled first), so nothing leaves the pointer.
+     */
+    _keepDragged(window) {
+        if (!window || Main.sessionMode.isLocked || this._split?.inTransit(window))
+            return;
+        const grabbed = this._grab?.window === window ||
+            (this._dragged?.window === window && GLib.get_monotonic_time() < this._dragged.until);
+        if (!grabbed)
+            return;
+        const ctx = this._context();
+        const mon = window.get_monitor();
+        if (!ctx.registry || !ctx.onlyOnPrimary || mon < 0 || mon === ctx.primary)
+            return;
+        const state = ctx.registry.forMonitorIndex(mon);
+        const idx = state?.indexOf(window) ?? -1;
+        if (idx < 0 || idx === state.activeIndex)
+            return;
+        log(`"${window.get_title()}" dragged onto ${state.connector}: islands filed it on virtual ` +
+            `workspace ${idx + 1}; keeping it on the one in view (${state.activeIndex + 1})`);
+        islandsMove(state, window, state.activeIndex);
+        this._islandsChanged(ctx, `kept dragged "${window.get_title()}" in view`);
+    }
+
+    /** Lock / unlock: at unlock, act on what changed while locked. */
+    _sessionUpdated() {
+        const locked = Main.sessionMode.isLocked;
+        if (locked === this._locked)
+            return;
+        this._locked = locked;
+        if (locked) {
+            log('screen locked: window changes wait for the unlock');
+            return;
+        }
+        log('unlocked: catching up on window changes made while locked');
+        this._split?.unlocked();
+        this._schedule();
     }
 
     _trackWindow(window) {
@@ -436,6 +638,47 @@ export default class MaximizeOwnWorkspace extends Extension {
 
     windowSplitDrop(thumb, window) {
         return this._split?.windowDrop(thumb, window) ?? false;
+    }
+
+    // ---- API for dock-pull-window@zihan.local --------------------------------
+
+    /**
+     * May a dock click bring `window` (a root window, not a transient) to
+     * where its monitor is looking, instead of switching to it? Answered from
+     * this extension's own model, so the dock follows the same rule:
+     *
+     *   kind      'real' (primary workspace), 'virt' (islands group on a
+     *             secondary) or 'none' (out of the model)
+     *   eligible  in scope here (normal, not skip-taskbar / exempt, not sticky
+     *             on the primary, tracked by islands on a secondary)
+     *   holds     maximized, fullscreen or half of a split pair: it has a
+     *             place of its own, so the click goes there (stock)
+     *   away      not at the place its monitor shows now
+     *   hereHeld  the place shown now is a full-screen space (a maximized /
+     *             fullscreen window or a split pair holds it): nothing may
+     *             join it, so the click switches away (stock)
+     *   state     the islands MonitorState for 'virt', else null
+     *
+     * Only meaningful while this extension is ACTIVE (the caller checks).
+     */
+    pullInfo(window) {
+        if (!window || !this._dying)
+            return null;
+        const ctx = this._context();
+        const d = this._describe(window, ctx);
+        let here = null;
+        if (d.loc.kind === 'real')
+            here = {kind: 'real', ws: global.workspace_manager.get_active_workspace(), mon: d.loc.mon};
+        else if (d.loc.kind === 'virt')
+            here = virtLoc(d.loc, d.loc.state.activeIndex);
+        return {
+            kind: d.loc.kind,
+            eligible: d.eligible,
+            holds: holdsPlace(window),
+            away: !!here && !sameLoc(d.loc, here),
+            hereHeld: !!here && this._hasMax(here, ctx),
+            state: d.loc.kind === 'virt' ? d.loc.state : null,
+        };
     }
 
     _schedule() {
@@ -611,6 +854,12 @@ export default class MaximizeOwnWorkspace extends Extension {
                 this._layoutChanged();
             return;
         }
+
+        // Locked: nobody chose these window changes on screen. Keep the old
+        // snapshot (no absorb), so the sweep _sessionUpdated() runs at
+        // unlock sees them; a monitor change still settles above.
+        if (Main.sessionMode.isLocked)
+            return;
 
         this._busy = true;
         try {
@@ -857,7 +1106,9 @@ export default class MaximizeOwnWorkspace extends Extension {
 
         const focus = global.display.focus_window;
         const focused = group.find(w => w === focus) ?? null;
-        const follow = !!focused && !Main.overview.visible && this._isActive(loc);
+        // Never switch/focus behind the lock screen (a locked settle's reconcile).
+        const follow = !!focused && !Main.overview.visible &&
+            !Main.sessionMode.isLocked && this._isActive(loc);
 
         let moved = null;
         if (loc.kind === 'real') {
@@ -945,7 +1196,7 @@ export default class MaximizeOwnWorkspace extends Extension {
         } else if (d.loc.kind === 'real') {
             window.change_workspace(target.ws);
         } else {
-            d.loc.state.moveWindowTo(window, target.idx);
+            islandsMove(d.loc.state, window, target.idx);
             this._islandsChanged(ctx, `merged "${window.get_title()}"`);
         }
         if (iso?.created)
@@ -1061,7 +1312,7 @@ export default class MaximizeOwnWorkspace extends Extension {
                 w.change_workspace(to.ws);
         } else {
             for (const w of windows)
-                to.state.moveWindowTo(w, to.idx);
+                islandsMove(to.state, w, to.idx);
             this._islandsChanged(this._context(), `merged into virtual workspace ${to.idx + 1}`);
         }
     }
@@ -1134,7 +1385,7 @@ export default class MaximizeOwnWorkspace extends Extension {
         }
 
         for (const w of windows) {
-            state.moveWindowTo(w, target);
+            islandsMove(state, w, target);
             // Dynamic mode can renumber groups after a move; follow the window.
             target = state.indexOf(w);
         }

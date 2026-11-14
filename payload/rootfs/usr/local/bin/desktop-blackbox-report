@@ -1,0 +1,315 @@
+#!/usr/bin/python3
+"""desktop-blackbox-report: summarize the desktop-blackbox event log.
+
+Part of Stability Guard.  Reads $XDG_STATE_HOME/desktop-blackbox/events.jsonl
+(default ~/.local/state) plus the shell-logout-hang-log incident list.
+
+Shows, per desktop event type, how often it happened, how often errors /
+anomalies followed, the top error signatures in the window after it, the
+anomaly list, and a timeline of recent incidents.
+"""
+import argparse
+import bisect
+import collections
+import datetime as dt
+import json
+import os
+import re
+import sys
+import time
+
+STATE_HOME = os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state')
+STATE = os.path.join(STATE_HOME, 'desktop-blackbox')
+HANG_LOG = os.path.join(STATE_HOME, 'shell-logout-hangs.log')
+
+
+def parse_since(s):
+    m = re.fullmatch(r'(\d+(?:\.\d+)?)([smhdw])', s.strip())
+    if m:
+        mult = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}[m.group(2)]
+        return time.time() - float(m.group(1)) * mult
+    return dt.datetime.fromisoformat(s).timestamp()
+
+
+def load(state_dir, since):
+    recs = []
+    for name in ('events.jsonl.1', 'events.jsonl'):
+        p = os.path.join(state_dir, name)
+        try:
+            with open(p, encoding='utf-8', errors='replace') as f:
+                for ln in f:
+                    try:
+                        r = json.loads(ln)
+                    except ValueError:
+                        continue
+                    if r.get('t', 0) >= since:
+                        recs.append(r)
+        except OSError:
+            pass
+    recs.sort(key=lambda r: r['t'])
+    return recs
+
+
+def fmt_t(t, full=False):
+    return time.strftime('%m-%d %H:%M:%S' if full else '%H:%M:%S', time.localtime(t))
+
+
+def short(s, n):
+    s = str(s)
+    return s if len(s) <= n else s[:n - 1] + '\u2026'
+
+
+def event_detail(e):
+    t = e.get('type')
+    if t == 'monitors-changed':
+        d = e.get('diff') or {}
+        parts = []
+        if d.get('added'):
+            parts.append('+' + ','.join(d['added']))
+        if d.get('removed'):
+            parts.append('-' + ','.join(d['removed']))
+        if d.get('mode'):
+            parts.append('mode ' + ','.join(d['mode']))
+        if e.get('err'):
+            parts.append('ERR ' + short(e['err'], 40))
+        parts.append('[%s]' % (e.get('layout') or '?'))
+        return ' '.join(parts)
+    if t == 'hotplug':
+        kd = e.get('kconn_diff') or {}
+        s = ' '.join('%s %s' % (c, v) for c, v in kd.items()) or 'no connector change'
+        return '%s (%d uevents)' % (s, e.get('n', 0))
+    if t in ('dpms-off', 'dpms-on'):
+        return 'mode %s' % e.get('mode')
+    if t == 'session-start':
+        bits = ['login' if e.get('login') else 'daemon (re)start']
+        if e.get('prev_unclean'):
+            bits.append('previous run ended uncleanly')
+        return ', '.join(bits)
+    if t == 'shell-restart':
+        return '%s -> %s' % (e.get('old_owner'), e.get('new_owner'))
+    return ''
+
+
+def anomaly_key(a):
+    d = a.get('detail') or {}
+    return '%s %s' % (a.get('type'), d.get('c') or d.get('class') or d.get('uuid') or d.get('what') or '')
+
+
+def analyze(recs, window, last_n):
+    events = [r for r in recs if r['kind'] == 'event']
+    errs = [r for r in recs if r['kind'] == 'error' and r.get('sev') in ('error', 'warn')]
+    infos = [r for r in recs if r['kind'] == 'error' and r.get('sev') == 'info']
+    anomalies = [r for r in recs if r['kind'] == 'anomaly']
+    snaps = [r for r in recs if r['kind'] == 'snapshot']
+    err_t = [r['t'] for r in errs]
+    info_t = [r['t'] for r in infos]
+    sig_total = collections.Counter()
+    sig_ext = {}
+    for r in errs:
+        sig_total[r['sig']] += r.get('count', 1)
+        if r.get('ext'):
+            sig_ext[r['sig']] = r['ext']
+
+    anom_by_inc = collections.defaultdict(list)
+    for a in anomalies:
+        if a.get('event_id'):
+            anom_by_inc[a['event_id']].append(a)
+
+    def errs_after(t0):
+        i = bisect.bisect_left(err_t, t0)
+        j = bisect.bisect_right(err_t, t0 + window)
+        return errs[i:j]
+
+    per = collections.OrderedDict()
+    for e in events:
+        typ = e['type']
+        p = per.setdefault(typ, {'n': 0, 'with_errors': 0, 'with_warns': 0, 'with_anomaly': 0,
+                                 'sigs': collections.Counter(), 'sig_events': collections.Counter(),
+                                 'anoms': collections.Counter()})
+        p['n'] += 1
+        after = errs_after(e['t'])
+        if any(r['sev'] == 'error' for r in after):
+            p['with_errors'] += 1
+        if any(r['sev'] == 'warn' for r in after):
+            p['with_warns'] += 1
+        seen = set()
+        for r in after:
+            p['sigs'][r['sig']] += r.get('count', 1)
+            if r['sig'] not in seen:
+                p['sig_events'][r['sig']] += 1
+                seen.add(r['sig'])
+        inc_anoms = [a for a in anom_by_inc.get(e.get('incident'), [])
+                     if a['type'] != 'errors-after-event' and a.get('new')]
+        if inc_anoms:
+            p['with_anomaly'] += 1
+            for a in inc_anoms:
+                p['anoms'][anomaly_key(a)] += 1
+
+    summary = []
+    for typ, p in sorted(per.items(), key=lambda kv: -kv[1]['n']):
+        summary.append({
+            'type': typ, 'n': p['n'], 'with_errors': p['with_errors'],
+            'with_warns': p['with_warns'], 'with_new_anomaly': p['with_anomaly'],
+            'anomalies': dict(p['anoms'].most_common(5)),
+            'top_sigs': [{'sig': s, 'count': n, 'after_n_events': p['sig_events'][s],
+                          'total_in_period': sig_total[s], 'ext': sig_ext.get(s)}
+                         for s, n in p['sigs'].most_common(5)]})
+
+    agg = collections.OrderedDict()
+    for a in anomalies:
+        if a['type'] == 'errors-after-event':
+            continue
+        k = anomaly_key(a)
+        g = agg.setdefault(k, {'key': k, 'n': 0, 'new': 0, 'first': a['t'], 'last': a['t'],
+                               'after': collections.Counter(), 'example': a.get('detail')})
+        g['n'] += 1
+        g['new'] += 1 if a.get('new') else 0
+        g['last'] = a['t']
+        for et in set(a.get('events') or ['periodic']):
+            g['after'][et] += 1
+    anom_list = [dict(g, after=dict(g['after'].most_common(4))) for g in agg.values()]
+    anom_list.sort(key=lambda g: -g['last'])
+
+    incidents = collections.OrderedDict()
+    for e in events:
+        incidents.setdefault(e.get('incident') or e['event_id'], []).append(e)
+    timeline = []
+    for inc_id, evs in list(incidents.items())[-last_n:]:
+        t0, t1 = evs[0]['t'], evs[-1]['t']
+        i = bisect.bisect_left(err_t, t0)
+        j = bisect.bisect_right(err_t, t1 + window)
+        after = errs[i:j]
+        sev = collections.Counter()
+        sigs = collections.Counter()
+        for r in after:
+            sev[r['sev']] += r.get('count', 1)
+            sigs[r['sig']] += r.get('count', 1)
+        ki = bisect.bisect_left(info_t, t0)
+        kj = bisect.bisect_right(info_t, t1 + window)
+        timeline.append({
+            'incident': inc_id, 't': t0,
+            'events': [{'t': e['t'], 'type': e['type'], 'detail': event_detail(e)} for e in evs],
+            'errors': sev.get('error', 0), 'warns': sev.get('warn', 0),
+            'top_sigs': [{'sig': s, 'count': n, 'ext': sig_ext.get(s)}
+                         for s, n in sigs.most_common(3)],
+            'kernel_info': [short(r.get('msg'), 100) for r in infos[ki:kj]][:3],
+            'anomalies': [{'type': a['type'], 'new': a.get('new'), 'detail': a.get('detail')}
+                          for a in anom_by_inc.get(inc_id, []) if a['type'] != 'errors-after-event'],
+        })
+
+    shell_rss = [(s['t'], s.get('shell', {}).get('rss_mb')) for s in snaps
+                 if s.get('shell', {}).get('rss_mb')]
+    health = {
+        'records': len(recs),
+        'self_errors': sum(1 for r in recs if r['kind'] == 'self-error'),
+        'session_starts': sum(1 for e in events if e['type'] == 'session-start'),
+        'unclean_previous_runs': sum(1 for e in events if e['type'] == 'session-start'
+                                     and e.get('prev_unclean')),
+        'shell_rss_mb': {'first': shell_rss[0][1], 'last': shell_rss[-1][1],
+                         'max': max(v for _, v in shell_rss)} if shell_rss else None,
+        'top_sigs_overall': [{'sig': s, 'count': n, 'ext': sig_ext.get(s)}
+                             for s, n in sig_total.most_common(5)],
+    }
+    return {'summary': summary, 'anomalies': anom_list, 'timeline': timeline, 'health': health}
+
+
+def logout_hangs(since):
+    out = []
+    try:
+        with open(HANG_LOG) as f:
+            for ln in f:
+                m = re.match(r'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s+(.*)', ln)
+                if m and dt.datetime.strptime(m.group(1), '%Y-%m-%d %H:%M:%S').timestamp() >= since:
+                    out.append(ln.strip())
+    except OSError:
+        pass
+    return out
+
+
+def print_text(res, args, since):
+    W = 100
+    h = res['health']
+    print('desktop-blackbox report  since %s  (%d records, window %ds after each event)'
+          % (fmt_t(since, True), h['records'], args.window))
+    print('=' * W)
+    print('EVENTS  (n | followed by errors / warnings / new anomalies within %ds)' % args.window)
+    for s in res['summary']:
+        print('%-18s %4d | err %3d  warn %3d  anom %3d' % (
+            s['type'], s['n'], s['with_errors'], s['with_warns'], s['with_new_anomaly']))
+        for a, n in s['anomalies'].items():
+            print('      ! %-60s x%d' % (short(a, 60), n))
+        for g in s['top_sigs']:
+            print('      %5d  after %d/%d  (period total %d)  %s%s' % (
+                g['count'], g['after_n_events'], s['n'], g['total_in_period'],
+                short(g['sig'], 70), ('  [%s]' % g['ext']) if g['ext'] else ''))
+    print('-' * W)
+    print('ANOMALIES  (n, new = not present before the event; most recent first)')
+    if not res['anomalies']:
+        print('  none')
+    for g in res['anomalies'][:args.anomalies]:
+        ex = g['example'] or {}
+        extra = ex.get('error') or ex.get('err') or ''
+        print('  %-48s n=%-3d new=%-3d last %s  after %s %s' % (
+            short(g['key'], 48), g['n'], g['new'], fmt_t(g['last'], True),
+            ','.join('%s:%d' % kv for kv in g['after'].items()), short(extra, 60)))
+    print('-' * W)
+    print('TIMELINE  (last %d incidents)' % args.last)
+    for inc in res['timeline']:
+        evs = inc['events']
+        print('%s  %s' % (fmt_t(inc['t'], True), ' -> '.join(e['type'] for e in evs)))
+        for e in evs:
+            if e['detail']:
+                print('      %s %-16s %s' % (fmt_t(e['t']), e['type'], short(e['detail'], 70)))
+        if inc['errors'] or inc['warns']:
+            print('      errors %d, warns %d: %s' % (inc['errors'], inc['warns'], '; '.join(
+                '%dx %s%s' % (g['count'], short(g['sig'], 60),
+                              (' [%s]' % g['ext']) if g['ext'] else '') for g in inc['top_sigs'])))
+        for k in inc['kernel_info']:
+            print('      kernel: %s' % k)
+        for a in inc['anomalies']:
+            if a['new']:
+                d = a['detail'] or {}
+                print('      ANOMALY %s %s' % (a['type'], short(json.dumps(d), 70)))
+        old = [a['type'] for a in inc['anomalies'] if not a['new']]
+        if old:
+            print('      (persisting: %s)' % ', '.join(sorted(set(old))))
+    print('-' * W)
+    print('HEALTH  self-errors %d | session starts %d (unclean previous runs %d) | shell RSS %s'
+          % (h['self_errors'], h['session_starts'], h['unclean_previous_runs'],
+             ('%(first)s -> %(last)s MB (max %(max)s)' % h['shell_rss_mb'])
+             if h['shell_rss_mb'] else 'n/a'))
+    print('TOP SIGNATURES OVERALL')
+    for g in h['top_sigs_overall']:
+        print('  %6d  %s%s' % (g['count'], short(g['sig'], 85),
+                              ('  [%s]' % g['ext']) if g['ext'] else ''))
+    hangs = res.get('logout_hangs') or []
+    if hangs:
+        print('LOGOUT HANGS (shell-logout-hangs.log): %d in period, last: %s' % (
+            len(hangs), short(hangs[-1], 80)))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--since', default='7d', help='e.g. 7d, 12h, 30m or an ISO date (default 7d)')
+    ap.add_argument('--last', type=int, default=15, help='incidents in the timeline (default 15)')
+    ap.add_argument('--window', type=int, default=30, help='seconds after an event (default 30)')
+    ap.add_argument('--anomalies', type=int, default=25, help='max anomaly rows')
+    ap.add_argument('--json', action='store_true', help='machine-readable output')
+    ap.add_argument('--state-dir', default=os.environ.get('DESKTOP_BLACKBOX_DIR', STATE))
+    args = ap.parse_args()
+    since = parse_since(args.since)
+    recs = load(args.state_dir, since)
+    res = analyze(recs, args.window, args.last)
+    res['logout_hangs'] = logout_hangs(since)
+    if args.json:
+        json.dump(res, sys.stdout, indent=1, default=str)
+        print()
+    else:
+        try:
+            print_text(res, args, since)
+        except BrokenPipeError:
+            pass
+
+
+if __name__ == '__main__':
+    main()

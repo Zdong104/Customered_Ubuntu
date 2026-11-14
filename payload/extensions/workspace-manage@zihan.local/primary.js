@@ -54,6 +54,18 @@ import * as Strip from './strip.js';
 /** Mutter's own cap is 36; Mission Control's is 16. */
 export const MAX_WORKSPACES = 16;
 
+/**
+ * Whether `index` names a monitor Mutter still has. On a multi-step undock
+ * (primary DP-x -> DP-y -> eDP-1 within ~2 s) a cached index can outlive its
+ * monitor, and Mutter's per-monitor calls then fail assertions
+ * (logical_monitor_from_number, get_work_area_for_monitor, ...).
+ */
+export function isValidMonitor(index) {
+    return Number.isInteger(index) && index >= 0 &&
+        index < global.display.get_n_monitors() &&
+        !!Main.layoutManager.monitors[index];
+}
+
 export class PrimaryStrip {
     constructor(injector, log) {
         this._injector = injector;
@@ -304,6 +316,12 @@ export class PrimaryStrip {
     }
 
     appendWithWindow(window, monitorIndex) {
+        // The strip's cached index may predate a monitor change: this is the
+        // primary strip, so fall back to the current primary.
+        if (!isValidMonitor(monitorIndex))
+            monitorIndex = Main.layoutManager.primaryIndex;
+        if (!isValidMonitor(monitorIndex))
+            return false;
         const ws = this.append();
         if (!ws)
             return false;

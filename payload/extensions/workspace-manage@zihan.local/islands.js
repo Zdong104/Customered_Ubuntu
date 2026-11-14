@@ -75,6 +75,7 @@
  * between would fold windows together for good.
  */
 
+import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
@@ -83,7 +84,7 @@ import {ExtensionState} from 'resource:///org/gnome/shell/misc/extensionUtils.js
 import {SecondaryMonitorDisplay} from 'resource:///org/gnome/shell/ui/workspacesView.js';
 
 import * as Strip from './strip.js';
-import {MAX_WORKSPACES, exitFullscreen, pickNeighbour} from './primary.js';
+import {MAX_WORKSPACES, exitFullscreen, isValidMonitor, pickNeighbour} from './primary.js';
 
 export const ISLANDS_UUID = 'workspace-islands@danielbernalo.github.io';
 
@@ -103,6 +104,42 @@ const CHANGE_METHODS = ['untrack', 'moveWindowTo', 'switchTo', '_notifySizeChang
 
 /** Delay of the parked-on-primary sweep (_unparkOrphans) after a move. */
 const UNPARK_DELAY_MS = 300;
+
+/**
+ * DING (ding@rastersoft.com) desktop windows, "Desktop Icons N": one maximized
+ * transparent window per monitor, which DING's own shell code only turns into
+ * a DESKTOP-type, skip-taskbar window once it is first mapped. Islands must
+ * never adopt one: filed into a group that is not on screen, it is minimized
+ * before its first map, DING never sees it map, and it stays minimized and on
+ * the wrong monitor — with every icon (they all live on the primary's window)
+ * gone. That is what docking did on 2026-11-11 10:50. Recognised from the
+ * owning process (known at window-created, before title or type are), or from
+ * the marker DING sets once it manages the window.
+ */
+const DING_SCRIPT = 'ding@rastersoft.com/app/ding.js';
+const _dingWindows = new WeakMap();
+
+export function isDingWindow(window) {
+    if (!window)
+        return false;
+    if (window.customJS_ding)
+        return true;
+    const known = _dingWindows.get(window);
+    if (known !== undefined)
+        return known;
+    const pid = window.get_pid?.() ?? -1;
+    if (!(pid > 0))
+        return false; // not known yet: ask again later
+    let ding = false;
+    try {
+        const [ok, bytes] = GLib.file_get_contents(`/proc/${pid}/cmdline`);
+        ding = ok && new TextDecoder().decode(bytes).includes(DING_SCRIPT);
+    } catch (e) {
+        ding = false;
+    }
+    _dingWindows.set(window, ding);
+    return ding;
+}
 
 export class IslandsBridge {
     constructor(injector, settings, log) {
@@ -167,6 +204,9 @@ export class IslandsBridge {
         this._placement = placement;
 
         this._install();
+        await this._patchPanelDots(islands, token);
+        if (this._token !== token)
+            return;
         Main.extensionManager.connectObject('extension-state-changed', (_m, ext) => {
             if (ext.uuid === ISLANDS_UUID && ext.state === ExtensionState.ACTIVE)
                 this._reconcile();
@@ -244,6 +284,37 @@ export class IslandsBridge {
             registry.forConnector(state.connector) === state;
     }
 
+    // ---- panel dots ------------------------------------------------------------
+
+    /**
+     * Islands repoints the top bar's workspace dots at the FOCUSED window's
+     * monitor. The bar only exists on the primary, so with focus on an
+     * external the dots counted that monitor's workspaces while the user was
+     * looking at the primary (2026-11-09: 5 dots over a 1-workspace primary
+     * overview). Make them always describe the primary, like stock GNOME;
+     * secondary swipe previews are ignored for the same reason.
+     */
+    async _patchPanelDots(islands, token) {
+        let Indicator;
+        try {
+            ({Indicator} = await import(islands.dir.get_child('indicator.js').get_uri()));
+        } catch (e) {
+            console.warn(`workspace-manage: cannot load islands indicator.js: ${e}`);
+            return;
+        }
+        if (this._token !== token || typeof Indicator?.prototype?.sync !== 'function')
+            return;
+
+        this._injector.overrideMethod(Indicator.prototype, 'sync', original => function () {
+            const adj = this._nativeAdjustment;
+            if (!this._dots || !adj || typeof this._dots.set !== 'function')
+                return original.call(this);
+            this._dots.set(adj.upper, adj.value);
+        });
+        this._ext()?._indicator?.sync();
+        this._log('panel dots follow the primary monitor');
+    }
+
     // ---- injections ------------------------------------------------------------
 
     _install() {
@@ -298,6 +369,10 @@ export class IslandsBridge {
         // monitor is un-parked here if its new group is the one on screen.
         inj.overrideMethod(this._monitorState.MonitorState.prototype, 'track',
             original => function (window, index = -1, options = {}) {
+                // DING's desktop windows are no member of any group (see
+                // isDingWindow). -1 is what track() says for "not added".
+                if (isDingWindow(window))
+                    return -1;
                 const landing = self._landing.get(window);
                 const at = landing?.state === this ? this._groups.indexOf(landing.group) : -1;
                 if (at < 0) {
@@ -338,7 +413,11 @@ export class IslandsBridge {
         inj.overrideMethod(SecondaryMonitorDisplay.prototype, '_updateWorkspacesView',
             original => function () {
                 const ext = self._ext();
-                const state = self.ready ? ext?._registry.forMonitorIndex(this._monitorIndex) : null;
+                // A display whose monitor is already gone (mid-undock) gets
+                // the stock view; WorkspacesDisplay rebuilds it on
+                // monitors-changed.
+                const state = self.ready && isValidMonitor(this._monitorIndex)
+                    ? ext?._registry.forMonitorIndex(this._monitorIndex) : null;
                 if (!state || state.size >= ISLANDS_MIN_SIZE ||
                     !Meta.prefs_get_workspaces_only_on_primary()) {
                     original.call(this);
@@ -353,8 +432,8 @@ export class IslandsBridge {
                     this._overviewAdjustment,
                     state,
                     index => ext._commitSwitch(state, index, {announce: false}),
-                    (index, window, monitorIndex) =>
-                        ext._dropWindow(state, index, window, monitorIndex));
+                    (index, window, monitorIndex) => isValidMonitor(monitorIndex)
+                        ? ext._dropWindow(state, index, window, monitorIndex) : false);
                 this.add_child(this._workspacesView);
             });
     }
@@ -561,6 +640,8 @@ export class IslandsBridge {
     }
 
     appendWithWindow(state, window, monitorIndex) {
+        if (!isValidMonitor(monitorIndex))
+            return false;
         const index = this.insert(state, state.size);
         if (index < 0)
             return false;

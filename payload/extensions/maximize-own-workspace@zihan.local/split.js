@@ -1650,6 +1650,11 @@ export class SplitView {
         const owner = this._owner;
         if (!pair.alive || !pair.settled)
             return; // _verify decides first
+        // Locked: the dock (not in unlock-dialog) is gone and its strut with
+        // it, so the work area is not the one the pair tiles; do not end a
+        // pair over that. Changes after the unlock are judged as usual.
+        if (Main.sessionMode.isLocked)
+            return;
         if (owner._grabbing || owner._layoutChanging || owner._busy) {
             this._judgeLater(pair);
             return;
@@ -1937,6 +1942,11 @@ export class SplitView {
         }
     }
 
+    /** Screen unlocked (extension.js _sessionUpdated): re-tile what is off. */
+    unlocked() {
+        this._retileLater();
+    }
+
     /** End of a sweep: the windows check() returned become full-screen again. */
     finish(regrow, ctx) {
         if (regrow.length > 0)
@@ -1950,7 +1960,10 @@ export class SplitView {
     }
 
     _retileLater() {
-        if (this._areaId || !this._pairs?.size)
+        // Locked: the work area only changes for the lock (the dock goes
+        // away); unlocked() re-checks. A monitor change still re-tiles
+        // through the settle's validate() and _quickRetile.
+        if (this._areaId || !this._pairs?.size || Main.sessionMode.isLocked)
             return;
         this._areaId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._areaId = 0;

@@ -21,7 +21,20 @@ import Meta from 'gi://Meta';
 
 import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {WorkspaceThumbnail} from 'resource:///org/gnome/shell/ui/workspaceThumbnail.js';
+
+/**
+ * Whether `index` names a monitor Mutter still has. On a multi-step undock
+ * (primary DP-x -> DP-y -> eDP-1 within ~2 s) a thumbnail can outlive its
+ * monitor; a BackgroundManager for it then fails Mutter's assertions
+ * (get_monitor_geometry / get_monitor_scale).
+ */
+function isValidMonitor(index) {
+    return Number.isInteger(index) && index >= 0 &&
+        index < global.display.get_n_monitors() &&
+        !!Main.layoutManager.monitors[index];
+}
 
 export default class ThumbnailWallpaperExtension extends Extension {
     enable() {
@@ -43,15 +56,28 @@ export default class ThumbnailWallpaperExtension extends Extension {
                 const group = new Meta.BackgroundGroup();
                 this._contents.insert_child_below(group, null);
 
-                let manager = new Background.BackgroundManager({
-                    container: group,
-                    monitorIndex: this.monitorIndex,
-                });
-
-                this.connect('destroy', () => {
+                let manager = null;
+                const drop = () => {
                     manager?.destroy();
                     manager = null;
-                });
+                };
+                // Only for a monitor that exists now; otherwise wait for the
+                // next monitors-changed (by then the thumbnail is usually
+                // rebuilt anyway). A change also drops a backdrop whose
+                // monitor went away or changed, instead of keeping stale data.
+                const attach = () => {
+                    drop();
+                    if (!isValidMonitor(this.monitorIndex))
+                        return;
+                    manager = new Background.BackgroundManager({
+                        container: group,
+                        monitorIndex: this.monitorIndex,
+                    });
+                };
+                attach();
+
+                Main.layoutManager.connectObject('monitors-changed', attach, this);
+                this.connect('destroy', drop);
             });
     }
 

@@ -1,0 +1,7 @@
+{
+  "uuid": "dock-pull-window@zihan.local",
+  "name": "Dock Pulls Windows",
+  "description": "Clicking an Ubuntu Dock icon (or picking a window in its app spread or window menu) brings a normal window that sits on another workspace to the current one, instead of switching workspaces. Maximized, fullscreen and Split View windows, and clicks made from a full-screen space, keep the stock switch. On secondary monitors (Workspace Islands) the window joins the monitor's visible virtual workspace.",
+  "shell-version": ["50"],
+  "version": 1
+}

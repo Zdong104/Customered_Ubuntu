@@ -17,6 +17,12 @@ libvulkan-dev libx11-dev libxkbfile-dev libssl-dev libsqlite3-dev libpcap-dev
 libev-dev libnl-3-dev libnl-genl-3-dev libnl-route-3-dev gir1.2-appindicator3-0.1
 libxcb-damage0
 
+# native GIOModule of the recent-clipboard-paths extension (built at install)
+libglib2.0-dev
+
+# emoji picker font (stock on Ubuntu Desktop; listed so it is never missing)
+fonts-noto-color-emoji
+
 # input method / Chinese
 fcitx5 fcitx5-chinese-addons fcitx5-config-qt fcitx5-module-cloudpinyin
 language-pack-zh-hans language-pack-zh-hans-base language-pack-gnome-zh-hans

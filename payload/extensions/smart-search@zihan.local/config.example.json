@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to ~/.config/smart-search/config.json; changes are picked up live. Put the AeroDataBox (RapidAPI) key in ~/.config/smart-search/aerodatabox.key (one line, chmod 600) rather than here; flightStatus.apiKey is only a fallback. Empty weatherCity = the city of your system time zone.",
+  "weatherCity": "",
+  "currencyTargets": ["USD", "EUR", "GBP"],
+  "flightStatus": {"provider": "aerodatabox", "apiKey": ""}
+}

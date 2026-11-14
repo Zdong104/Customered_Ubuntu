@@ -1,0 +1,7 @@
+{
+  "uuid": "smart-search@zihan.local",
+  "name": "Smart Search (Quick Answers)",
+  "description": "Spotlight-style instant answers at the top of the Activities overview search: units with automatic direction (36F, 6'7, 70mph, 3斤, 30 mpg, 27\"), time zones (3pm PST, time in Tokyo), date math (days until Dec 25, Nov 13 + 90 days), Unix timestamps, durations, currency (ECB rates via frankfurter, cached 12 h), hex/binary/colors, and lookups that open the browser (flight numbers, UPS/USPS/FedEx tracking, weather via Open-Meteo, define <word>). Enter copies the answer; lookups open their page. Quiet on anything it does not recognize. Optional settings: ~/.config/smart-search/config.json (see config.example.json).",
+  "shell-version": ["50"],
+  "version": 1
+}

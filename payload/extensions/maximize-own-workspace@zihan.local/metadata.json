@@ -2,5 +2,6 @@
   "uuid": "maximize-own-workspace@zihan.local",
   "name": "Maximize to Own Workspace",
   "description": "A workspace holding a maximized or fullscreen window holds only that window, on that monitor. Covers maximizing, un-maximizing (merge back), minimizing, closing, and windows moved or dropped onto another workspace. On secondary monitors it works on Workspace Islands' virtual workspaces. Replaces fullscreen-to-empty-workspace2@corgijan.dev.",
-  "shell-version": ["50"]
+  "shell-version": ["50"],
+  "session-modes": ["user", "unlock-dialog"]
 }

@@ -1,0 +1,6 @@
+{
+  "uuid": "notification-banners@zihan.local",
+  "name": "Notification banners",
+  "description": "Banners close after at most 5 s (unless hovered), and full-screen no longer holds back banners from apps that are not in front of you.",
+  "shell-version": ["50"]
+}

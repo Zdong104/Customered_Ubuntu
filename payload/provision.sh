@@ -470,6 +470,16 @@ step_extensions() {
             rm -rf "${E:?}/$u"
         done < "$M/extensions"
     fi
+    # An extension with src/Makefile carries a small native GIOModule
+    # (recent-clipboard-paths: libmultisource.so). It is built here, on the
+    # target, against the installed GLib; nothing binary is shipped. A failed
+    # build only leaves that one extension inactive (it checks for the .so).
+    for u in "${new[@]}"; do
+        [ -f "$E/$u/src/Makefile" ] || continue
+        if ! make -s -C "$E/$u/src" CFLAGS="-O2 -Wall"; then
+            echo "WARNING: could not build the native module of $u; that extension stays inactive"
+        fi
+    done
     for u in "${new[@]}"; do
         rm -f "$E/$u"/schemas/gschemas.compiled
         for x in "$E/$u"/schemas/*.gschema.xml; do [ -e "$x" ] && install -m 0644 "$x" "$S/"; done
@@ -557,7 +567,8 @@ step_services() {
     if live; then systemctl daemon-reload; fi
     systemctl enable preload-user-groups.path preload-user-groups.service preload-firstboot.service
     systemctl --global enable recent-folders.service recent-thumbnails.service \
-        chrome-pwa-x11.path chrome-pwa-x11.service
+        chrome-pwa-x11.path chrome-pwa-x11.service \
+        desktop-blackbox.service shell-logout-hang-log.service
     if live; then
         # existing accounts get the app groups now (effective at next login)
         systemctl start preload-user-groups.path || true

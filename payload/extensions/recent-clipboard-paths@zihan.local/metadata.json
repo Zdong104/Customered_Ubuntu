@@ -1,0 +1,6 @@
+{
+  "uuid": "recent-clipboard-paths@zihan.local",
+  "name": "Recent Clipboard Paths",
+  "description": "Copying in Files' Recent view puts recent:/// URIs on the clipboard; rewrite them to the real paths (text) and file:// URIs (file paste).",
+  "shell-version": ["50"]
+}

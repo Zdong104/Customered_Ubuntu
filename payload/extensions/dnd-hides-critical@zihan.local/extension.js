@@ -21,7 +21,10 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 export default class DndHidesCriticalExtension extends Extension {
     enable() {
         const tray = Main.messageTray;
-        const orig = tray._updateState;
+        // Look the prototype method up at call time (not captured here) so
+        // notification-banners@zihan.local's prototype patch chains in
+        // whichever order the two extensions are enabled.
+        const proto = Object.getPrototypeOf(tray);
 
         tray._updateState = function () {
             const queue = this._notificationQueue.filter(
@@ -30,7 +33,7 @@ export default class DndHidesCriticalExtension extends Extension {
                 this._notificationQueue = queue;
                 this.emit('queue-changed');
             }
-            return orig.call(this);
+            return proto._updateState.call(this);
         };
     }
 

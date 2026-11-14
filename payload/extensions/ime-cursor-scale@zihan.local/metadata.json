@@ -1,0 +1,6 @@
+{
+  "uuid": "ime-cursor-scale@zihan.local",
+  "name": "IME Cursor Scale (fcitx5)",
+  "description": "Shell text fields (overview search, emoji picker) report the cursor in logical coordinates; fcitx5 draws its candidate bar as an XWayland window, whose coordinate space is scaled when xwayland-native-scaling is on. This scales the position so the bar appears under the cursor.",
+  "shell-version": ["48", "49", "50", "51"]
+}
