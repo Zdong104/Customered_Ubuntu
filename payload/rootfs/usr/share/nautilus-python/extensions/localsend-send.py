@@ -89,6 +89,21 @@ def _send(paths):
         _notify("Could not start LocalSend", e.message)
 
 
+def _local_path(f):
+    """Real local path of a selected item, also in Recent (recent:// URIs),
+    whose activation URI is the file:// target; None for remote/virtual ones."""
+    loc = f.get_location()
+    path = loc.get_path() if loc else None
+    if not path:
+        try:
+            uri = f.get_activation_uri()
+        except Exception:
+            uri = None
+        if uri and uri.startswith("file://"):
+            path = Gio.File.new_for_uri(uri).get_path()
+    return path if path and os.path.exists(path) else None
+
+
 class LocalSendMenu(GObject.GObject, Nautilus.MenuProvider):
     def get_file_items(self, *args):
         files = args[-1]
@@ -96,9 +111,8 @@ class LocalSendMenu(GObject.GObject, Nautilus.MenuProvider):
             return []
         paths = []
         for f in files:
-            loc = f.get_location()
-            path = loc.get_path() if loc else None
-            if not path or not os.path.exists(path):
+            path = _local_path(f)
+            if not path:
                 return []                  # remote/virtual entries (trash, network…)
             paths.append(path)
         n = len(paths)

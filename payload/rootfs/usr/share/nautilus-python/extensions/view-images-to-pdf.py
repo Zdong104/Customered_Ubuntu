@@ -105,8 +105,23 @@ def _combine(paths):
     proc.communicate_utf8_async(None, None, done)
 
 
+def _local_path(f):
+    """Real local path of a selected item, also in Recent (recent:// URIs),
+    whose activation URI is the file:// target; None for remote/virtual ones."""
+    loc = f.get_location()
+    path = loc.get_path() if loc else None
+    if not path:
+        try:
+            uri = f.get_activation_uri()
+        except Exception:
+            uri = None
+        if uri and uri.startswith("file://"):
+            path = Gio.File.new_for_uri(uri).get_path()
+    return path if path and os.path.exists(path) else None
+
+
 def _is_local_image(f):
-    return (f.get_uri_scheme() == "file" and not f.is_directory()
+    return (not f.is_directory() and _local_path(f) is not None
             and (f.get_mime_type() or "").startswith("image/"))
 
 
@@ -121,7 +136,7 @@ if not getattr(sys, "_view_app_menu_loaded", False):
         def get_file_items(self, files):
             if not files or not all(_is_local_image(f) for f in files) or not _launcher():
                 return []
-            paths = [f.get_location().get_path() for f in files]
+            paths = [_local_path(f) for f in files]
             if len(paths) == 1:
                 label = "Convert to PDF"
             else:
