@@ -12,6 +12,12 @@ Notes that apply to every GNOME Shell extension below:
 - Extension shortcuts are the defaults shipped with the package; you can change most of them
   with `gsettings` or the Extensions app.
 
+User guides with screenshots: [docs/features/](features/): [Quick Answers](features/quick-answers.md),
+[Emoji Picker](features/emoji-picker.md), [Shortcut Cheatsheet](features/shortcut-cheatsheet.md),
+[Pinyin input](features/pinyin-input.md), [Workspaces](features/workspaces.md),
+[Files](features/files.md), [Notifications](features/notifications.md),
+[Stability Guard](features/stability-guard.md), [ProCharts](features/procharts.md).
+
 Contents:
 
 1. [GNOME Shell extensions (new)](#1-gnome-shell-extensions-new)
@@ -40,18 +46,25 @@ window spread or "All Windows" menu. Alt+Tab and overview clicks are unchanged.
 
 ### Emoji Picker
 
-Adds a macOS-style emoji picker, which stock GNOME does not have at the shell level. It opens near
-the text cursor (or centred on the focused window's monitor), supports English and Chinese keyword
+Adds a macOS-style emoji picker, which stock GNOME does not have at the shell level. It usually opens
+centred on the focused window's monitor (it follows the text cursor only when the app reports one;
+with `GTK_IM_MODULE=fcitx` most apps report it to fcitx5 instead), supports English and Chinese keyword
 search, and remembers recently used emoji. The chosen emoji is pasted into the app you were typing in
-through the clipboard, and your previous clipboard is put back afterwards. Emoji are drawn with the
+through the clipboard, and your previous clipboard is put back afterwards. Only one clipboard
+format is restored (files, else PNG, else text), and nothing is restored if the clipboard held more
+than 64 MB, if the source app took longer than 0.3 s to hand over its data, or if the clipboard
+changed in the meantime. Emoji are drawn with the
 standard Noto Color Emoji font (no Apple emoji font is shipped).
 
 **How to use:** `Super+.` or `Ctrl+Super+Space` opens/closes it. Type to search, arrow keys to move,
-`Enter` to insert, `1`–`9` to pick from the highlighted row, `Tab` or `Ctrl+Left/Right` to change
-category, `Esc` to close. Terminals automatically get `Ctrl+Shift+V` instead of `Ctrl+V`.
+`PgUp`/`PgDn` to move 5 rows, `Enter` to insert, `1`–`9` to pick from the highlighted row, `Tab`,
+`Shift+Tab` or `Ctrl+Left/Right` to change category, `Esc` to clear a non-empty search (a second
+`Esc` closes). Terminals automatically get `Ctrl+Shift+V` instead of `Ctrl+V`.
 
 **Source:** `payload/extensions/emoji-picker@zihan.local/` (keybinding and options in
 `schemas/org.gnome.shell.extensions.emoji-picker.gschema.xml`)
+
+Guide: [Emoji Picker](features/emoji-picker.md)
 
 ### IME Cursor Scale
 
@@ -82,13 +95,14 @@ suppressed; banners from other apps still appear. Do Not Disturb still holds eve
 In stock Files, copying an item in the "Recent" view puts an internal `recent:///…` address on the
 clipboard, which other apps cannot use. This extension rewrites the clipboard to the real file: pasting
 as text gives the normal path, and pasting into a file manager pastes the actual file. It includes a
-small compiled helper (a C GIOModule) because GNOME Shell's JavaScript cannot offer several clipboard
-formats at once.
+small C helper (a GIOModule) because GNOME Shell's JavaScript cannot offer several clipboard
+formats at once. No prebuilt library is shipped: the helper is compiled during install (needs
+`libglib2.0-dev`), and if the build fails the extension simply stays inactive.
 
 **How to use:** automatic. Copy (`Ctrl+C`) in Files' Recent view, then paste anywhere.
 
 **Source:** `payload/extensions/recent-clipboard-paths@zihan.local/` (C helper source in `src/`,
-prebuilt `libmultisource.so`)
+built into `libmultisource.so` at install time)
 
 ### Shortcut Cheatsheet
 
@@ -97,22 +111,28 @@ Adds a macOS-style shortcut overlay. Holding the Super key alone shows a sheet o
 it hides the sheet without opening the overview. A quick Super tap still opens the overview as usual.
 
 **How to use:** hold `Super` for about 0.8 s. Pressing another key while holding Super cancels the
-sheet and runs that shortcut. Edit `~/.config/shortcut-cheatsheet/shortcuts.json` (created with
-defaults the first time the sheet is shown) to add or change entries; changes show the next time the
-sheet opens.
+sheet and runs that shortcut. Edit `~/.config/shortcut-cheatsheet/shortcuts.json` (written with
+defaults on the first Super hold if it is missing) to add or change entries; changes show the next
+time the sheet opens. The defaults are written only once, so shortcuts added to the defaults in later
+releases do not reach an existing file unless you delete it. Moving the mouse before the sheet
+appears cancels it.
 
 **Source:** `payload/extensions/shortcut-cheatsheet@zihan.local/` (default list in `defaults.js`)
+
+Guide: [Shortcut Cheatsheet](features/shortcut-cheatsheet.md)
 
 ### Quick Answers (Smart Search)
 
 Adds Spotlight-style instant answers at the top of the overview search, which stock GNOME does not
-have. It converts units (`36F`, `70mph`, `6'7`, `3斤`), time zones (`3pm PST`, `time in Tokyo`), date
-math (`days until Dec 25`), Unix timestamps, currencies (ECB rates), and hex/binary/colour values, and
-offers lookups that open the browser (weather, `define <word>`, parcel tracking numbers, flight
-numbers). It stays silent on anything it does not recognize. It ships without any API key: the inline
-flight-status card needs your own free AeroDataBox (RapidAPI) key, and a guided setup dialog appears
-the first time you search a flight number; without a key, flight searches still offer links to web
-flight trackers.
+have. It converts units (`36F`, `70mph`, `6'7`, `3斤`), durations, download time (`20 GB at 100 Mbps`),
+screen size (`27"`), fuel economy, pressure, data sizes and rates, time zones (`3pm PST`,
+`time in Tokyo`), date math (`days until Dec 25`), Unix timestamps, currencies (ECB rates; `¥` means
+CNY), number bases (`0xff`, `255 in hex`) and colour values (including `rgb()` input), and offers
+lookups that open the browser (weather, `define <word>`, parcel tracking links, flight numbers). It
+stays silent on anything it does not recognize. It ships without any API key: the inline
+flight-status card needs your own free AeroDataBox (RapidAPI) key. Without one, a flight search shows
+a "Sign in free to show flight status" row; choosing it opens the guided setup dialog (nothing opens
+automatically). Flight searches still offer links to web flight trackers.
 
 **How to use:** press `Super` and type. `Enter` copies the top answer, or opens the page for lookups.
 Optional settings (weather city, currency targets) go in `~/.config/smart-search/config.json`; see
@@ -120,6 +140,8 @@ Optional settings (weather city, currency targets) go in `~/.config/smart-search
 dialog writes it for you).
 
 **Source:** `payload/extensions/smart-search@zihan.local/` (setup guide in its `README.md`)
+
+Guide: [Quick Answers](features/quick-answers.md)
 
 ---
 
@@ -130,7 +152,8 @@ dialog writes it for you).
 Adds macOS Mission Control-style workspace management to the overview: drag thumbnails to reorder,
 "+" to add a workspace, hover "×" to remove one (its windows move to the neighbouring workspace). It
 works on the primary monitor and on secondary monitors, and thumbnails can be dragged between
-monitors. Each monitor starts with one workspace, and workspaces you add persist even when empty. When
+monitors. Each login resets every monitor to one workspace; workspaces you add persist (even when empty) only
+within the session, and each monitor is capped at 16 workspaces. When
 you unplug an external monitor, each of its workspaces becomes its own workspace on the laptop screen
 instead of everything piling into the current one.
 
@@ -138,13 +161,17 @@ instead of everything piling into the current one.
 
 **Source:** `payload/extensions/workspace-manage@zihan.local/`
 
+Guide: [Workspaces](features/workspaces.md)
+
 ### Maximize to Own Workspace (with Split View)
 
 A maximized or full-screen window automatically gets a workspace of its own, and returns to its
 previous workspace when un-maximized, much like macOS full-screen spaces; this also works on secondary
 monitors. Split View: in the overview, drag a window onto the left or right half of a full-screen
-space's thumbnail and the two windows share that space side by side. The pair ends when either window
-is closed, minimized, moved away or re-maximized.
+space's thumbnail and the two windows share that space side by side. A second way is to drop one full-screen
+space's thumbnail onto another. The pair ends when either window is closed, minimized, moved away or
+re-maximized, when you drag a half by its title bar more than 40 px, resize an outer edge, or press
+`Super+Down` (these do not re-maximize the windows).
 
 **How to use:** maximize a window (double-click its title bar or `Super+Up`). For Split View, open the
 overview, drag a window onto the highlighted half of a full-screen thumbnail; drag the divider to
@@ -194,8 +221,10 @@ stock GNOME's plain grey.
 
 ### DND Hides Critical
 
-With Do Not Disturb on, stock GNOME still shows "critical" banners (Chrome web apps such as Teams send
-these). This extension hides those too; they still go to the notification list.
+Shown in the Extensions app as "DND Hides Critical Banners". With Do Not Disturb on, stock GNOME still
+shows "critical" banners (Chrome web apps such as Teams send these). This extension hides those too;
+they still go to the notification list. It also hides critical banners for apps whose banners you have
+turned off in Settings, not only under Do Not Disturb.
 
 **How to use:** turn on Do Not Disturb in the notification/calendar menu (`Super+V`).
 
@@ -273,17 +302,22 @@ script is `tools/make_mac_themes.py` (repository only).
 With stock settings, long pinyin input makes the candidate bar blink on every key, because the cloud
 candidate in slot 2 shows a loading placeholder and then changes size. The cloud candidate is moved to
 the last slot of the page (`CloudPinyinIndex=9`) and its loading animation is turned off, so the local
-candidates stay still.
+candidates stay still. Cloud pinyin uses the Google backend and only queries once the pinyin is at
+least 4 letters long.
 
 **How to use:** automatic. Pick the cloud candidate with `9`. `Ctrl+Alt+Shift+C` toggles cloud pinyin.
 
-**Source:** `payload/rootfs/etc/skel/.config/fcitx5/conf/pinyin.conf`
+**Source:** `payload/rootfs/etc/skel/.config/fcitx5/conf/pinyin.conf`,
+`payload/rootfs/etc/skel/.config/fcitx5/conf/cloudpinyin.conf`
+
+Guide: [Pinyin input](features/pinyin-input.md)
 
 ### Candidate window position in Chrome, Claude and Electron apps
 
 On Wayland, fcitx5 places the candidate window in the wrong spot in Chrome, the Claude desktop app and
 other Electron apps when monitors use different scaling. These apps are launched under XWayland
-instead, where the window lands at the cursor. Launchers are re-patched automatically after package
+instead, where the window lands at the cursor. Chrome is also pre-started on XWayland (hidden, no
+window) at login, so later launches reuse that process. Launchers are re-patched automatically after package
 upgrades, and Chrome web-app (PWA) launchers are re-patched whenever Chrome regenerates them.
 
 **How to use:** automatic.
@@ -321,8 +355,10 @@ restarts, and extensions being switched off. After each event it takes short sna
 related journal errors and anomalies (for example a window stuck on every workspace). A report command
 summarizes what went wrong and after which event.
 
-**How to use:** runs automatically after login. Run `desktop-blackbox-report` (options: `--since 7d`,
-`--last N`, `--json`) to see the summary. The log is kept in `~/.local/state/desktop-blackbox/`.
+**How to use:** runs automatically after login. Run `desktop-blackbox-report` to see the summary. Full usage:
+`desktop-blackbox-report [--since 7d|12h|30m|2w|ISO-date] [--last 15] [--window 30] [--anomalies 25] [--json] [--state-dir DIR]`
+(the state directory defaults to `~/.local/state/desktop-blackbox/`, or `DESKTOP_BLACKBOX_DIR` if
+set). The log rotates at 20 MB, keeping two files.
 
 **Source:** `/usr/local/bin/desktop-blackbox`, `/usr/local/bin/desktop-blackbox-report` and the user
 unit `desktop-blackbox.service`, shipped under `payload/rootfs/usr/local/bin/` and
@@ -332,14 +368,17 @@ unit `desktop-blackbox.service`, shipped under `payload/rootfs/usr/local/bin/` a
 
 GNOME Shell can hang on logout and get force-killed, which can make GNOME switch off all user
 extensions at the next login. This small service checks the journal shortly after each login, records
-any such incident, and sends a notification (urgent if extensions were switched off) so you know why
-your extensions look "gone".
+any such incident, and sends a notification (urgent if `disable-user-extensions` is still true when the check runs) so you
+know why your extensions look "gone". The incident log is trimmed to its newest 1000 lines.
 
 **How to use:** automatic. Incidents are listed in `~/.local/state/shell-logout-hangs.log` and in
-`desktop-blackbox-report`. If extensions were switched off, turn them back on in the Extensions app.
+`desktop-blackbox-report`. `shell-logout-hang-log --all` rescans the whole journal without notifying.
+If extensions were switched off, turn them back on in the Extensions app.
 
 **Source:** `/usr/local/bin/shell-logout-hang-log` and the user unit `shell-logout-hang-log.service`,
 shipped under `payload/rootfs/usr/local/bin/` and `payload/rootfs/usr/lib/systemd/user/`
+
+Guide: [Stability Guard](features/stability-guard.md)
 
 ### Fixes built into the extensions
 
@@ -390,12 +429,17 @@ package. **How to use:** from the app grid ("ONLYOFFICE"). **Source:** `payload/
 
 ### ProCharts for ONLYOFFICE presentations
 Business charts for the ONLYOFFICE presentation editor, built from native shapes (they save, export to
-PPTX/PDF and animate like any other shape): waterfalls, stacked/clustered columns and bars, Mekko,
-Gantt timelines, butterflies, CAGR and difference arrows, Harvey balls, process flows, org charts and
-other diagrams, and status indicators. The chart's data stays in the shape group: select a chart and
+PPTX/PDF and animate like any other shape). Charts: waterfall, build-down waterfall, stacked, 100% and
+clustered columns and bars, pipeline, line, area, 100% area, Mekko, Mekko (units), Gantt, pie,
+doughnut, bar of pie, butterfly, range bars, box plot, scatter and bubble. Elements: Harvey ball,
+checkbox, rating, process flow, cycle, hub and spoke, pyramid, funnel, Venn, matrix, org chart,
+timeline, table, agenda, progress bar, ring gauge, dial gauge, thermometer and traffic light. The chart's data stays in the shape group: select a chart and
 edit its numbers in the ProCharts panel to redraw it. Installed for every user in ONLYOFFICE's system
 plugin folder; re-installed when the package ships a new version and after ONLYOFFICE upgrades.
-**How to use:** in a presentation, **Insert > ProCharts**. **Source:**
+**How to use:** in a presentation, **Insert > ProCharts** (the main button opens the right-hand panel,
+the arrow lists items to insert directly); there is also a ProCharts button on the Plugins tab, and
+right-clicking a chart offers "Edit ProCharts <type>…". **Guide:** [ProCharts](features/procharts.md).
+**Source:**
 `payload/rootfs/usr/local/share/preload/onlyoffice-plugins/procharts.plugin` (built plugin),
 installed by `payload/rootfs/usr/local/lib/preload/reapply.sh` (section 3)
 
@@ -413,7 +457,7 @@ your own environments go in `~/.conda`. **How to use:** `conda activate`. **Sour
 Local, offline speech-to-text (whisper.cpp, GPU-accelerated through Vulkan when available) that starts
 in the background at login and types into any app. Text is inserted with `ydotool` (clipboard paste),
 because the default method drops Chinese text on Wayland. **How to use:** via its tray icon and
-hotkey (default set in the shipped config: Left Alt, push-to-talk); the model downloads on first use.
+hotkey (default set in the shipped config: hold Left Alt, push-to-talk); the model downloads on first use.
 **Source:** `payload/sources.conf` (`VOCALINUX`), `payload/rootfs/usr/local/bin/vocalinux*`,
 `payload/rootfs/etc/skel/.config/vocalinux/config.json`, `payload/rootfs/etc/xdg/autostart/vocalinux.desktop`,
 `payload/rootfs/etc/udev/rules.d/99-uinput.rules`, `payload/rootfs/etc/modules-load.d/uinput.conf`
