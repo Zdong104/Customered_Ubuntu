@@ -166,6 +166,8 @@ base_units() {
     systemctl --global enable ydotool.service 2>/dev/null || echo "ydotool.service not available"
     # docker/libvirt stay enabled as packaged (no images, no VMs, default network only)
     systemctl enable docker.service libvirtd.service 2>/dev/null || true
+    # keyd only remaps once /etc/keyd/default.conf is in place (step "files")
+    systemctl enable keyd.service 2>/dev/null || echo "keyd.service not available"
 }
 
 # Live: a source file under another name that points at one of our vendor URIs
@@ -534,6 +536,8 @@ step_files() {
         done < "$M/files"
     fi
     install -m 0644 "$list" "$M/files"
+    quirks_keep_user
+    keyd_conf
     # skel: config files are user-writable; nothing executable
     chmod -R u+rwX,go+rX,go-w /etc/skel/.config
     # Input method: fcitx5 for every new user
@@ -561,6 +565,44 @@ EOF
         modprobe uinput 2>/dev/null || true
         sysctl -q -p /etc/sysctl.d/90-sysrq.conf 2>/dev/null || true
     fi
+}
+
+# libinput reads one override file, /etc/libinput/local-overrides.quirks, which
+# preload ships (rootfs). A file the user had before preload is kept in
+# $BACKUP (and restored if preload stops shipping it); append it after ours so
+# the user's own quirks stay in effect too (in libinput a later match wins).
+quirks_keep_user() {
+    local q=etc/libinput/local-overrides.quirks
+    live && [ -f "$BACKUP/$q" ] && [ -f "$P/rootfs/$q" ] || return 0
+    {
+        cat "$P/rootfs/$q"
+        printf '\n# ---- kept from /%s as it was before preload ----\n' "$q"
+        cat "$BACKUP/$q"
+    } > "/$q.preload-new"
+    chmod 0644 "/$q.preload-new"
+    mv -f "/$q.preload-new" "/$q"
+}
+
+# keyd (Ctrl+Left/Right -> Home/End). keyd reads every /etc/keyd/*.conf, so
+# ours goes in only when it cannot meet a keyd setup of the user's: the target
+# is absent or starts with our marker line, and no other *.conf is there.
+# Deleting the marker line hands the file over to the user for good.
+KEYD_MARK='# preload-managed: keyd line navigation'
+keyd_conf() {
+    local src=/usr/local/lib/preload/keyd/default.conf dst=/etc/keyd/default.conf f
+    [ -f "$src" ] || return 0
+    if [ -e "$dst" ] && [ "$(head -n 1 "$dst")" != "$KEYD_MARK" ]; then
+        echo "keyd: keeping $dst (not preload's)"; return 0
+    fi
+    for f in /etc/keyd/*.conf; do
+        [ -e "$f" ] && [ "$f" != "$dst" ] || continue
+        echo "keyd: $f is there; not adding preload's $dst"; return 0
+    done
+    cmp -s "$src" "$dst" && return 0
+    install -d -m 0755 /etc/keyd
+    put 0644 "$src" "$dst"
+    echo "keyd: installed $dst"
+    if live; then systemctl try-restart keyd.service 2>/dev/null || true; fi
 }
 
 step_services() {

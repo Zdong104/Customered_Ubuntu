@@ -43,6 +43,9 @@ debootstrap squashfs-tools gdisk parted dosfstools
 img2pdf showtime gnome-sushi python3-nautilus usb-creator-gtk
 software-properties-gtk netpbm
 
+# Ctrl+Left/Right = line start/end (config: /usr/local/lib/preload/keyd)
+keyd
+
 # hardware / codecs
 intel-media-va-driver-non-free vainfo ubuntu-restricted-addons util-linux-extra
 

@@ -5,3 +5,11 @@
 MatchUdevType=keyboard
 MatchName=AT Translated Set 2 keyboard (vocalinux)
 AttrKeyboardIntegration=internal
+
+# keyd (Ctrl+Left/Right -> Home/End) grabs the keyboards and re-emits through
+# its own virtual device; tag it internal too so disable-while-typing keeps
+# working.
+[keyd virtual internal keyboard]
+MatchUdevType=keyboard
+MatchName=keyd virtual keyboard
+AttrKeyboardIntegration=internal
