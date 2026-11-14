@@ -360,6 +360,25 @@ with QEMU/libvirt, Docker, and more) from vendor repositories, .deb downloads an
 **How to use:** from the app grid. **Source:** `payload/packages.txt`, `payload/sources.conf`,
 `payload/apt-sources/`, `payload/keys/`, `payload/rootfs/etc/apt/preferences.d/`
 
+### ONLYOFFICE Desktop Editors
+Stock Ubuntu ships LibreOffice only. ONLYOFFICE Desktop Editors (documents, spreadsheets,
+presentations, PDF; strong Microsoft Office format compatibility) is installed from ONLYOFFICE's own
+apt repository, so it updates with the rest of the system. The repository key is pinned in the
+package. **How to use:** from the app grid ("ONLYOFFICE"). **Source:** `payload/sources.conf`
+(`REPO|onlyoffice`, `APT3P`), `payload/apt-sources/onlyoffice.list`,
+`payload/keys/onlyoffice-archive-keyring.asc`
+
+### ProCharts for ONLYOFFICE presentations
+Business charts for the ONLYOFFICE presentation editor, built from native shapes (they save, export to
+PPTX/PDF and animate like any other shape): waterfalls, stacked/clustered columns and bars, Mekko,
+Gantt timelines, butterflies, CAGR and difference arrows, Harvey balls, process flows, org charts and
+other diagrams, and status indicators. The chart's data stays in the shape group: select a chart and
+edit its numbers in the ProCharts panel to redraw it. Installed for every user in ONLYOFFICE's system
+plugin folder; re-installed when the package ships a new version and after ONLYOFFICE upgrades.
+**How to use:** in a presentation, **Insert > ProCharts**. **Source:**
+`payload/rootfs/usr/local/share/preload/onlyoffice-plugins/procharts.plugin` (built plugin),
+installed by `payload/rootfs/usr/local/lib/preload/reapply.sh` (section 3)
+
 ### Developer toolchains
 Build tools, Node.js, Python, Java, Claude Code and Codex CLIs (global npm), TinyTeX with XeLaTeX, and
 the `harbor` uv tool. **How to use:** from a terminal. **Source:** `payload/packages.txt`,

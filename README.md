@@ -34,7 +34,7 @@ produces a reminder to plug in.
 |---|---|
 | Browsers / AI | Google Chrome, Firefox (Mozilla's official .deb, not the snap), Claude desktop, ChatGPT desktop |
 | Communication | WeChat, Zoom, Slack, Discord |
-| Editing / office | VS Code, Inkscape, PDF Arranger, img2pdf, Showtime video player, Remmina remote desktop |
+| Editing / office | VS Code, ONLYOFFICE Desktop Editors (with the ProCharts presentation plugin), Inkscape, PDF Arranger, img2pdf, Showtime video player, Remmina remote desktop |
 | 3D / design | Blender, FreeCAD (edge) |
 | Other snaps | Cheese camera, iCloud for Linux, nvtop (GPU monitor), astral-uv, View, LocalSend (local-network file transfer similar to AirDrop; runs in the tray after login) |
 | Virtualization / containers | QEMU + libvirt + virt-manager (with UEFI/OVMF and swtpm TPM emulation), Docker |

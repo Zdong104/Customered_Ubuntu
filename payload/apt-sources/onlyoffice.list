@@ -1,0 +1,1 @@
+deb [arch=amd64 signed-by=/usr/share/keyrings/onlyoffice-archive-keyring.asc] https://download.onlyoffice.com/repo/debian squeeze main

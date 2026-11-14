@@ -9,6 +9,8 @@
 #     and Claude Desktop (--ozone-platform=x11), so fcitx5's candidate window is
 #     positioned correctly. /usr/local/share precedes /usr/share in XDG_DATA_DIRS.
 #     They are regenerated from the current package .desktop files every time.
+#  3. ONLYOFFICE plugins shipped by preload (ProCharts) into ONLYOFFICE's
+#     system plugin folder under /opt/onlyoffice.
 
 L=/usr/local/lib/preload
 
@@ -52,4 +54,72 @@ do
     chmod 644 "$OUT/$name"
 done
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$OUT" 2>/dev/null
+
+# --- 3. ONLYOFFICE plugins shipped by preload ------------------------------
+# Each built plugin (/usr/local/share/preload/onlyoffice-plugins/*.plugin, the
+# zip format of ONLYOFFICE's Plugin Manager) is unpacked into ONLYOFFICE's
+# system plugin folder, so every user has it. That folder belongs to the
+# onlyoffice-desktopeditors package, so this also restores the plugins after an
+# upgrade or reinstall. A stamp per plugin (sha256 of the shipped zip) means it
+# is only re-extracted when the shipped file changes or the folder is gone;
+# plugins preload stops shipping are removed again.
+if command -v python3 >/dev/null 2>&1; then
+    python3 - /usr/local/share/preload/onlyoffice-plugins \
+        /opt/onlyoffice/desktopeditors/editors/sdkjs-plugins \
+        /var/lib/preload/onlyoffice-plugins <<'PY' || logger -t preload-reapply "ONLYOFFICE plugin install failed" 2>/dev/null
+import hashlib, json, os, re, shutil, subprocess, sys, zipfile
+
+src, dst, stampd = sys.argv[1:4]
+def log(msg):
+    subprocess.run(["logger", "-t", "preload-reapply", msg], check=False)
+if not os.path.isdir(dst):          # ONLYOFFICE not installed (yet)
+    shutil.rmtree(stampd, ignore_errors=True)
+    sys.exit(0)
+os.makedirs(stampd, exist_ok=True)
+shipped = set()
+for name in sorted(os.listdir(src)) if os.path.isdir(src) else []:
+    if not name.endswith(".plugin"):
+        continue
+    path = os.path.join(src, name)
+    try:
+        data = open(path, "rb").read()
+        z = zipfile.ZipFile(path)
+        guid = json.loads(z.read("config.json"))["guid"]
+    except Exception as e:
+        log(f"skipping {name}: {e}")
+        continue
+    m = re.fullmatch(r"(?:asc\.)?(\{[0-9A-Fa-f-]{36}\})", guid)
+    if not m:
+        log(f"skipping {name}: unexpected guid {guid!r}")
+        continue
+    folder = m.group(1)
+    shipped.add(folder)
+    sha = hashlib.sha256(data).hexdigest()
+    stamp = os.path.join(stampd, folder)
+    target = os.path.join(dst, folder)
+    if os.path.isfile(os.path.join(target, "config.json")) and \
+            os.path.isfile(stamp) and open(stamp).read().strip() == sha:
+        continue
+    members = z.namelist()
+    if any(n.startswith("/") or ".." in n.split("/") for n in members):
+        log(f"skipping {name}: unsafe path in zip")
+        continue
+    tmp = os.path.join(dst, "." + folder + ".new")
+    shutil.rmtree(tmp, ignore_errors=True)
+    z.extractall(tmp)
+    for root, dirs, files in os.walk(tmp):
+        os.chmod(root, 0o755)
+        for f in files:
+            os.chmod(os.path.join(root, f), 0o644)
+    shutil.rmtree(target, ignore_errors=True)
+    os.rename(tmp, target)
+    open(stamp, "w").write(sha + "\n")
+    log(f"installed ONLYOFFICE plugin {name} into {target}")
+for folder in os.listdir(stampd):
+    if folder not in shipped:
+        shutil.rmtree(os.path.join(dst, folder), ignore_errors=True)
+        os.remove(os.path.join(stampd, folder))
+        log(f"removed ONLYOFFICE plugin {folder} (no longer shipped)")
+PY
+fi
 exit 0
