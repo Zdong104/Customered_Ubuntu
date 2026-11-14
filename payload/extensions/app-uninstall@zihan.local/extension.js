@@ -40,7 +40,9 @@ import {ExtensionState} from 'resource:///org/gnome/shell/misc/extensionUtils.js
 import * as Backends from './backends.js';
 import {UninstallDialog} from './dialog.js';
 
-const DOCK_UUIDS = ['ubuntu-dock@ubuntu.com', 'dash-to-dock@micxgx.gmail.com'];
+// The dock Ubuntu ships (and preload enables). The upstream Dash to Dock
+// extension is not hooked in this copy.
+const DOCK_UUIDS = ['ubuntu-dock@ubuntu.com'];
 const MAX_PACKAGES = 15;
 const DRY_RUN = GLib.getenv('APP_UNINSTALL_DRY_RUN') === '1';
 const TAG = '[app-uninstall]';
@@ -237,7 +239,7 @@ export default class AppUninstallExtension extends Extension {
         this._syncEntry(menu._appUninstall);
     }
 
-    // ---- Ubuntu Dock / Dash to Dock --------------------------------------------
+    // ---- Ubuntu Dock -----------------------------------------------------------
 
     /**
      * The dock rebuilds its menu (DockAppIconMenu, not exported) on every

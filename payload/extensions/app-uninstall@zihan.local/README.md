@@ -6,7 +6,7 @@ right click, on press-and-hold (a held mouse button works too) or with the Menu 
 It works in:
 
 - the app grid, its folders, overview search results and the stock dash (`AppMenu`)
-- the Ubuntu Dock / Dash to Dock (`DockAppIconMenu`, hooked through the live dock module)
+- the Ubuntu Dock (`DockAppIconMenu`, hooked through the live dock module)
 
 ## Files
 
