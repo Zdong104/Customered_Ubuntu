@@ -675,13 +675,13 @@ step_title() {
         updater)    echo "Install auto-updater" ;;
         base)       echo "Install Ubuntu packages: dev tools, input methods, fonts, virtualization" ;;
         repos)      echo "Install Chrome / VS Code / Firefox / Claude / ChatGPT" ;;
-        debs)       echo "Install WeChat / Zoom / cc-switch" ;;
+        debs)       echo "Install WeChat / Zoom" ;;
         npm)        echo "Install Claude Code / Codex CLIs" ;;
         miniconda)  echo "Install Miniconda" ;;
         tinytex)    echo "Install TinyTeX (LaTeX)" ;;
         uvtool)     echo "Install uv tools (harbor)" ;;
         vocalinux)  echo "Install Vocalinux voice input (compiles, slow)" ;;
-        snaps)      echo "Install snaps: Blender, Slack, Discord, LocalSend ..." ;;
+        snaps)      echo "Install snaps: Slack, Discord, LocalSend ..." ;;
         extensions) echo "Install GNOME extensions" ;;
         dconf)      echo "Apply desktop defaults" ;;
         files)      echo "Install system files and configuration" ;;

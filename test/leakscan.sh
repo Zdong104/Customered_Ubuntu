@@ -212,7 +212,7 @@ scan_root() { # dir label
     done <<< "$hits"
     # 3. secrets (text files outside vendor trees whose test fixtures ship sample keys)
     hits=$(grep -rIlE -D skip "$SECRET" "$R" 2>/dev/null |
-        grep -vE '/usr/(lib|share|src)/|/opt/(miniconda3|TinyTeX|vocalinux/venv|uv|google|zoom|wechat|cc-switch|ChatGPT|Claude)|/usr/local/lib/node_modules/' )
+        grep -vE '/usr/(lib|share|src)/|/opt/(miniconda3|TinyTeX|vocalinux/venv|uv|google|zoom|wechat|ChatGPT|Claude)|/usr/local/lib/node_modules/' )
     while IFS= read -r f; do [ -n "$f" ] && fail "secret-looking content in ${f#$R}"; done <<< "$hits"
 }
 

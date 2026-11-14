@@ -40,7 +40,7 @@ libvirt-clients virt-manager virtinst virt-viewer spice-client-gtk
 debootstrap squashfs-tools gdisk parted dosfstools
 
 # desktop apps
-pdfarranger inkscape img2pdf showtime gnome-sushi python3-nautilus usb-creator-gtk
+img2pdf showtime gnome-sushi python3-nautilus usb-creator-gtk
 software-properties-gtk netpbm
 
 # hardware / codecs

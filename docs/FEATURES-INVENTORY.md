@@ -372,8 +372,10 @@ them before.
 
 ### Applications and tools
 Installs a curated set of apps (Chrome, Firefox as the Mozilla .deb rather than the snap, VS Code,
-Claude and ChatGPT desktop, WeChat, Zoom, Slack, Discord, Blender, FreeCAD, Inkscape, virtualization
+Claude and ChatGPT desktop, WeChat, Zoom, Slack, Discord, ONLYOFFICE, virtualization
 with QEMU/libvirt, Docker, and more) from vendor repositories, .deb downloads and snaps.
+Apps dropped from this list in a later release (for example Blender, FreeCAD, Inkscape, PDF Arranger,
+iCloud for Linux and cc-switch) are not uninstalled from machines that already have them.
 **How to use:** from the app grid. **Source:** `payload/packages.txt`, `payload/sources.conf`,
 `payload/apt-sources/`, `payload/keys/`, `payload/rootfs/etc/apt/preferences.d/`
 
