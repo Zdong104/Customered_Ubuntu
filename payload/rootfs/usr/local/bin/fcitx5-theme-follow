@@ -16,7 +16,9 @@ apply() {
         *prefer-dark*) want=mac-dark ;;
         *)             want=mac-light ;;
     esac
-    [ -f "$CONF" ] && [ -d "/usr/share/fcitx5/themes/$want" ] || return 0
+    [ -f "$CONF" ] || return 0
+    [ -d "${XDG_DATA_HOME:-$HOME/.local/share}/fcitx5/themes/$want" ] ||
+        [ -d "/usr/share/fcitx5/themes/$want" ] || return 0
     cur=$(sed -n 's/^Theme=//p' "$CONF" | head -n 1)
     case $cur in
         mac-light|mac-dark) [ "$cur" = "$want" ] && return 0 ;;
