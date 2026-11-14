@@ -1,0 +1,12 @@
+[Unit]
+Description=Switch the fcitx5 candidate bar theme with GNOME's dark mode
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/fcitx5-theme-follow
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

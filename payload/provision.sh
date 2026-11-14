@@ -610,7 +610,8 @@ step_services() {
     systemctl enable preload-user-groups.path preload-user-groups.service preload-firstboot.service
     systemctl --global enable recent-folders.service recent-thumbnails.service \
         chrome-pwa-x11.path chrome-pwa-x11.service \
-        desktop-blackbox.service shell-logout-hang-log.service
+        desktop-blackbox.service shell-logout-hang-log.service \
+        fcitx5-theme-follow.service
     if live; then
         # existing accounts get the app groups now (effective at next login)
         systemctl start preload-user-groups.path || true

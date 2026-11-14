@@ -1,0 +1,31 @@
+#!/bin/sh
+# fcitx5-theme-follow: keep the fcitx5 candidate bar in step with GNOME's dark mode.
+#
+# On GNOME Wayland fcitx5's classicui is not available, so the gtk and qt
+# input-method modules draw the candidate bar inside each app. They read only
+# Theme= from classicui.conf (and reload it when the file changes); they ignore
+# DarkTheme= / UseDarkTheme=. So this service points Theme= at mac-dark or
+# mac-light whenever org.gnome.desktop.interface color-scheme changes, and once
+# at startup. A theme the user picked themselves (anything but our two mac
+# themes) is never touched. Run as a systemd --user service.
+
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/fcitx5/conf/classicui.conf
+
+apply() {
+    case $(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null) in
+        *prefer-dark*) want=mac-dark ;;
+        *)             want=mac-light ;;
+    esac
+    [ -f "$CONF" ] && [ -d "/usr/share/fcitx5/themes/$want" ] || return 0
+    cur=$(sed -n 's/^Theme=//p' "$CONF" | head -n 1)
+    case $cur in
+        mac-light|mac-dark) [ "$cur" = "$want" ] && return 0 ;;
+        *) return 0 ;;   # the user's own theme choice
+    esac
+    sed -i --follow-symlinks "s/^Theme=.*/Theme=$want/" "$CONF"
+}
+
+apply
+gsettings monitor org.gnome.desktop.interface color-scheme | while read -r _; do apply; done
+# the monitor only ends when the session bus goes away: let systemd retry
+exit 1
