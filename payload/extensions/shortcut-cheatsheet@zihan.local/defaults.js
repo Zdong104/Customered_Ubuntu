@@ -41,6 +41,11 @@ export const DEFAULTS = {
                 {keys: 'Super+Alt+1…4', desc: 'Jump to workspace N on this monitor'},
                 {keys: 'Hold Super', desc: 'This cheatsheet'},
                 {keys: 'Super then type', desc: 'Quick Answers in the search: 36F, $100, 3pm PST, weather, define word (Enter copies)'},
+                {keys: 'Ctrl+← / →', desc: 'Jump to the start / end of the line (keyd: Home / End)'},
+                {keys: 'Ctrl+Shift+← / →', desc: 'Select to the start / end of the line'},
+                {keys: 'Backspace+Esc+Enter', desc: 'Emergency: stop keyd if the keyboard misbehaves'},
+                {keys: 'Right-click app icon', desc: 'Uninstall (app grid and dock; Ubuntu’s own apps have no such item)'},
+                {keys: 'Switch to the app', desc: 'Clears its notifications and dock badge'},
             ],
         },
         {

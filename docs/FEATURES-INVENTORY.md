@@ -19,6 +19,7 @@ Contents:
 3. [Input method](#3-input-method)
 4. [Stability Guard](#4-stability-guard)
 5. [Other system and desktop features](#5-other-system-and-desktop-features)
+6. [Notifications, app removal and keyboard](#6-notifications-app-removal-and-keyboard)
 
 ---
 
@@ -498,3 +499,62 @@ A bootable installer for new machines is built from the same payload. **How to u
 On machines installed from the image, SSH host keys are generated on first boot (OpenSSH is installed
 but left disabled). **How to use:** automatic. **Source:** `payload/rootfs/usr/local/sbin/preload-firstboot`,
 `payload/rootfs/etc/systemd/system/preload-firstboot.service`
+
+---
+
+## 6. Notifications, app removal and keyboard
+
+### Notification Tidy
+
+Stock Ubuntu Dock badges an app with the notifications still in its tray, and an app that never
+withdraws its notifications (WeChat, for example) keeps its badge forever. Chrome also files every
+web-app notification (Teams, Outlook, Google Chat, Chrome Remote Desktop) under "Google Chrome". With
+this extension an app's notifications and dock badge are cleared once you have actually looked at the
+app (its window focused for a moment while you are active and the screen is unlocked; resident
+notifications are only marked as read). Chrome web-app notifications are filed under the installed
+web app instead, with its name, icon and badge; clicking still opens the right tab or app in Chrome.
+
+**How to use:** automatic. To route another web app, add `"host": "chrome-<app id>-Default.desktop"`
+to `~/.config/notification-tidy/pwa-map.json` (re-read on change; `null` removes a built-in entry).
+Details are in the extension's README.
+
+**Source:** `payload/extensions/notification-tidy@zihan.local/` (`extension.js` loads `impl-1.js`)
+
+### App Uninstall
+
+Stock Ubuntu has no way to remove an app from the app grid or dock; you need App Center or a terminal,
+and App Center does not handle every kind of app. This extension adds **Uninstall** to the
+right-click (or press-and-hold) menu of app icons in the app grid, its folders, search results and the
+dock. Debs go through PackageKit (with the normal password prompt), snaps through snapd, Flatpaks
+through `flatpak`, and your own launchers (Chrome web-app shortcuts, AppImages in your home) go to the
+Trash. Apps that are part of a minimal Ubuntu install get no menu item: the protected set is computed
+on the machine from the installed package data (the `ubuntu-desktop-minimal` / `ubuntu-standard` /
+`ubuntu-minimal` dependency closure, essential and required packages, the installer's snap seed and
+base snaps), not from a fixed list. Snaps that this package's installer image adds to the seed (Slack,
+Discord, LocalSend, ...) count as ordinary apps. Every deb removal is simulated first and refused if it
+would take part of the system with it.
+
+**How to use:** right-click an app icon and choose **Uninstall**. To protect more apps, add a desktop
+id, `deb:<package>` or `snap:<name>` per line to `~/.config/app-uninstall/protected-apps.txt`.
+
+**Source:** `payload/extensions/app-uninstall@zihan.local/` (`classify.py` computes the protected set,
+`protected-apps.txt` is the shipped backstop); `build/snaps.py` writes `/var/lib/preload/seed-added-snaps`
+
+### Ctrl+Left/Right jumps to the start/end of the line
+
+On stock Ubuntu, Ctrl+Left/Right moves one word. Here, as on a Mac, Ctrl+Left/Right goes to the start
+or end of the line (Home/End) and Ctrl+Shift+Left/Right selects to it, in every app, through the
+`keyd` key remapper. Ctrl+Home/End (start/end of the document) are unchanged. The ydotool virtual
+keyboard is excluded, so Vocalinux push-to-talk and paste keep working, and a libinput quirk marks
+keyd's virtual keyboard as internal so "disable touchpad while typing" still works (after the next
+login).
+
+**How to use:** Ctrl+Left/Right, Ctrl+Shift+Left/Right. If the keyboard ever misbehaves, press
+Backspace+Escape+Enter together to stop keyd. The config is `/etc/keyd/default.conf`; preload installs
+it only when there is no keyd config of your own, and replaces it on updates while its first line is
+`# preload-managed: keyd line navigation`. Delete that line to keep your own edits; apply a change
+with `sudo keyd.rvaiya reload`.
+
+**Source:** `payload/packages.txt` (`keyd`), `payload/rootfs/usr/local/lib/preload/keyd/default.conf`,
+`payload/rootfs/etc/libinput/local-overrides.quirks`, `payload/provision.sh` (`keyd_conf`,
+`base_units`)
